@@ -1,0 +1,15 @@
+[package]
+name = "swine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+caps = "0.5.6"
+clap = { version = "4.6.4", features = ["derive"] }
+libc = "0.2.189"
+libseccomp = "0.4.0"
+nix = { version = "0.31.3", features = ["fs", "sched", "process", "signal", "user", "mount", "term", "ptrace", "hostname"] }
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.19"
+toml = "1.1.3"
