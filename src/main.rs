@@ -151,16 +151,63 @@ fn main() -> Result<()> {
 
         Commands::Profile { command } => match command {
             ProfileCommands::List => {
-                println!("Listing profiles...");
-                // TODO: List profiles
+                let profiles_dir = config::Config::get_profiles_dir();
+                if profiles_dir.exists() {
+                    let mut found = false;
+                    for entry in std::fs::read_dir(profiles_dir)
+                        .context("Failed to read profiles directory")?
+                    {
+                        let entry = entry?;
+                        let path = entry.path();
+
+                        if path.is_file()
+                            && path.extension().and_then(|s| s.to_str()) == Some("toml")
+                        {
+                            if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                                println!("- {}", name);
+                                found = true;
+                            }
+                        }
+                    }
+                    if !found {
+                        println!("No profiles found.");
+                    }
+                } else {
+                    println!("No profiles directory found.");
+                }
             }
+
             ProfileCommands::Create { name } => {
-                println!("Creating profile: {}", name);
-                // TODO: Create profile
+                let profiles_dir = config::Config::get_profiles_dir();
+                let path = profiles_dir.join(format!("{}.toml", name));
+
+                if path.exists() {
+                    anyhow::bail!("Profile '{}' already exists at {:?}", name, path);
+                }
+
+                let mut new_config = config::Config::default();
+                new_config.profile.name = name.clone();
+                new_config
+                    .save()
+                    .context("Failed to save new profile configuration")?;
+
+                println!("Created new profile '{}' at {:?}", name, path);
             }
+
             ProfileCommands::Reset { name } => {
-                println!("Resetting profile: {}", name);
-                // TODO: Reset profile
+                let data_dir = config::Config::get_data_dir(&name);
+
+                if data_dir.exists() {
+                    std::fs::remove_dir_all(&data_dir).with_context(|| {
+                        format!("Failed to remove profile data directory at {:?}", data_dir)
+                    })?;
+                    println!("Successfully reset overlay data for profile '{}'.", name);
+                } else {
+                    println!(
+                        "Profile data directory for '{}' does not exist (nothing to reset).",
+                        name
+                    );
+                }
             }
         },
     }

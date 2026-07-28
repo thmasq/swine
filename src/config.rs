@@ -114,15 +114,30 @@ fn default_false() -> bool {
 }
 
 impl Config {
+    /// Returns the directory where profile TOMLs are stored
+    pub fn get_profiles_dir() -> PathBuf {
+        let home = std::env::var("HOME").unwrap_or_else(|_| String::from("~"));
+        PathBuf::from(home)
+            .join(".config")
+            .join("swine")
+            .join("profiles")
+    }
+
+    /// Returns the directory where profile overlay data (upperdir/workdir) is stored
+    pub fn get_data_dir(name: &str) -> PathBuf {
+        let home = std::env::var("HOME").unwrap_or_else(|_| String::from("~"));
+        PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("swine")
+            .join("profiles")
+            .join(name)
+    }
+
     /// Loads a profile from ~/.config/swine/profiles/<name>.toml
     /// If the file does not exist, returns a default configuration.
     pub fn load(name: &str) -> anyhow::Result<Self> {
-        let home = std::env::var("HOME").unwrap_or_else(|_| String::from("~"));
-        let config_dir = PathBuf::from(home)
-            .join(".config")
-            .join("swine")
-            .join("profiles");
-
+        let config_dir = Self::get_profiles_dir();
         let path = config_dir.join(format!("{}.toml", name));
 
         if path.exists() {
@@ -137,5 +152,17 @@ impl Config {
             config.profile.name = name.to_string();
             Ok(config)
         }
+    }
+
+    /// Saves the current configuration to disk
+    pub fn save(&self) -> anyhow::Result<()> {
+        let config_dir = Self::get_profiles_dir();
+        std::fs::create_dir_all(&config_dir)?;
+
+        let path = config_dir.join(format!("{}.toml", self.profile.name));
+        let content = toml::to_string_pretty(self)?;
+        std::fs::write(&path, content)?;
+
+        Ok(())
     }
 }

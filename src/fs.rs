@@ -4,7 +4,12 @@ use nix::unistd::{chdir, pivot_root};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Result<()> {
+pub struct FsSetupResult {
+    pub wayland_socket: Option<String>,
+    pub fuse_pid: Option<u32>,
+}
+
+pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Result<FsSetupResult> {
     println!("Child: Assembling isolated filesystem...");
     let none: Option<&str> = None;
 
@@ -12,6 +17,35 @@ pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Resu
         .context("Failed to remount / as private")?;
 
     let staging = Path::new("/tmp/swine_root");
+
+    setup_staging_area(staging)?;
+    mount_host_system_dirs(staging)?;
+    mount_pseudo_filesystems(staging)?;
+    mount_dev_nodes(staging)?;
+
+    mount_overlay_binds(profile_name, staging)?;
+
+    let wayland_socket = proxy_wayland_sockets(staging)?;
+
+    if let Some(dz) = dropzone {
+        mount_dropzone(&dz, staging)?;
+    }
+
+    mount_network_and_fonts(staging)?;
+
+    finalize_pivot_root(staging)?;
+
+    let fuse_pid = mount_overlay_fs_post_pivot()?;
+
+    println!("Child: Filesystem isolated successfully.");
+
+    Ok(FsSetupResult {
+        wayland_socket,
+        fuse_pid,
+    })
+}
+
+fn setup_staging_area(staging: &Path) -> Result<()> {
     if !staging.exists() {
         fs::create_dir_all(staging).context("Failed to create staging dir")?;
     }
@@ -39,12 +73,18 @@ pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Resu
         "sys",
         "home/user/.wine",
     ];
+
     for dir in &dirs {
         let p = staging.join(dir);
         fs::create_dir_all(&p).with_context(|| format!("Failed to create {:?}", p))?;
     }
+    Ok(())
+}
 
+fn mount_host_system_dirs(staging: &Path) -> Result<()> {
+    let none: Option<&str> = None;
     let bind_dirs = ["/usr", "/lib", "/lib64", "/usr/lib32", "/bin", "/sbin"];
+
     for b in &bind_dirs {
         let target = staging.join(b.trim_start_matches('/'));
         if Path::new(b).exists() {
@@ -75,16 +115,26 @@ pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Resu
         )?;
     }
 
+    Ok(())
+}
+
+fn mount_pseudo_filesystems(staging: &Path) -> Result<()> {
+    let none: Option<&str> = None;
+
     let sys_target = staging.join("sys");
 
-    mount(
+    if mount(
         Some("sysfs"),
         &sys_target,
         Some("sysfs"),
         MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
         none,
     )
-    .context("Failed to mount fresh sysfs")?;
+    .is_err()
+    {
+        mount(Some("/sys"), &sys_target, none, MsFlags::MS_BIND, none)
+            .context("Failed to bind-mount host /sys as fallback")?;
+    }
 
     let shm_target = staging.join("dev/shm");
     fs::create_dir_all(&shm_target).ok();
@@ -107,42 +157,95 @@ pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Resu
     )
     .context("Failed to mount /tmp")?;
 
-    let dev_nodes = ["/dev/null", "/dev/zero", "/dev/urandom", "/dev/random"];
+    let proc_target = staging.join("proc");
+    mount(
+        Some("proc"),
+        &proc_target,
+        Some("proc"),
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
+        none,
+    )
+    .context("Failed to mount /proc onto staging")?;
+
+    Ok(())
+}
+
+fn mount_dev_nodes(staging: &Path) -> Result<()> {
+    let none: Option<&str> = None;
+    let dev_nodes = [
+        "/dev/null",
+        "/dev/zero",
+        "/dev/urandom",
+        "/dev/random",
+        "/dev/fuse",
+    ];
+
     for node in &dev_nodes {
         let target = staging.join(node.trim_start_matches('/'));
-        fs::File::create(&target).ok();
+        if Path::new(node).exists() {
+            fs::File::create(&target).ok();
 
-        mount(Some(*node), &target, none, MsFlags::MS_BIND, none)
-            .with_context(|| format!("Failed to bind-mount {}", node))?;
+            mount(Some(*node), &target, none, MsFlags::MS_BIND, none)
+                .with_context(|| format!("Failed to bind-mount {}", node))?;
+        }
     }
+    Ok(())
+}
 
+fn mount_overlay_binds(profile_name: &str, staging: &Path) -> Result<()> {
+    let none: Option<&str> = None;
     let home = std::env::var("HOME").unwrap_or_else(|_| String::from("~"));
     let base_prefix = PathBuf::from(&home).join(".local/share/swine/base_prefix");
+
     let profile_dir = PathBuf::from(&home)
         .join(".local/share/swine/profiles")
         .join(profile_name);
-    let upperdir = profile_dir.join("upper");
-    let workdir = profile_dir.join("work");
 
     fs::create_dir_all(&base_prefix).ok();
-    fs::create_dir_all(&upperdir).ok();
-    fs::create_dir_all(&workdir).ok();
+    fs::create_dir_all(&profile_dir.join("upper")).ok();
+    fs::create_dir_all(&profile_dir.join("work")).ok();
 
-    let overlay_options = format!(
-        "lowerdir={},upperdir={},workdir={}",
-        base_prefix.display(),
-        upperdir.display(),
-        workdir.display()
-    );
+    let overlay_base = staging.join(".swine_overlay");
+    fs::create_dir_all(overlay_base.join("lower")).ok();
+    fs::create_dir_all(overlay_base.join("profile")).ok();
 
-    let wine_prefix_target = staging.join("home/user/.wine");
+    mount(
+        Some(&base_prefix),
+        &overlay_base.join("lower"),
+        none,
+        MsFlags::MS_BIND | MsFlags::MS_REC,
+        none,
+    )?;
+    mount(
+        none,
+        &overlay_base.join("lower"),
+        none,
+        MsFlags::MS_REMOUNT | MsFlags::MS_BIND | MsFlags::MS_RDONLY | MsFlags::MS_REC,
+        none,
+    )?;
+
+    mount(
+        Some(&profile_dir),
+        &overlay_base.join("profile"),
+        none,
+        MsFlags::MS_BIND | MsFlags::MS_REC,
+        none,
+    )?;
+
+    Ok(())
+}
+
+fn mount_overlay_fs_post_pivot() -> Result<Option<u32>> {
+    let overlay_options = "lowerdir=/.swine_overlay/lower,upperdir=/.swine_overlay/profile/upper,workdir=/.swine_overlay/profile/work";
+    let wine_prefix_target = "/home/user/.wine";
+    let mut fuse_pid = None;
 
     if let Err(e) = mount(
         Some("overlay"),
-        &wine_prefix_target,
+        wine_prefix_target,
         Some("overlay"),
         MsFlags::empty(),
-        Some(overlay_options.as_str()),
+        Some(overlay_options),
     ) {
         println!(
             "Child: Native OverlayFS failed ({:?}). Attempting fuse-overlayfs fallback...",
@@ -151,11 +254,12 @@ pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Resu
 
         let mut child = std::process::Command::new("fuse-overlayfs")
             .arg("-o")
-            .arg(&overlay_options)
-            .arg(&wine_prefix_target)
+            .arg(overlay_options)
+            .arg(wine_prefix_target)
             .spawn()
             .context("Failed to spawn fuse-overlayfs fallback")?;
 
+        fuse_pid = Some(child.id());
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         if let Ok(Some(status)) = child.try_wait() {
@@ -168,21 +272,19 @@ pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Resu
         println!("Child: Native OverlayFS mounted successfully.");
     }
 
-    let proc_target = staging.join("proc");
-    mount(
-        Some("proc"),
-        &proc_target,
-        Some("proc"),
-        MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
-        none,
-    )
-    .context("Failed to mount /proc onto staging")?;
+    Ok(fuse_pid)
+}
+
+fn proxy_wayland_sockets(staging: &Path) -> Result<Option<String>> {
+    let none: Option<&str> = None;
+    let mut wayland_socket = None;
 
     if let Ok(xdg_runtime) = std::env::var("XDG_RUNTIME_DIR") {
         let xdg_dir = Path::new(&xdg_runtime);
         if let Ok(entries) = std::fs::read_dir(xdg_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
+
                 if name.starts_with("wayland-") && !name.ends_with(".lock") {
                     let source = entry.path();
                     let target_dir = staging.join("run/user/1000");
@@ -201,48 +303,47 @@ pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Resu
                     .is_ok()
                     {
                         println!("Child: Proxied Wayland socket ({}) to sandbox.", name);
+                        if wayland_socket.is_none() {
+                            wayland_socket = Some(name);
+                        }
                     }
                 }
             }
         }
     }
 
-    if let Some(dz) = dropzone {
-        let workspace_target = staging.join("workspace");
-        fs::create_dir_all(&workspace_target).context("Failed to create /workspace")?;
+    Ok(wayland_socket)
+}
 
-        mount(
-            Some(&dz),
-            &workspace_target,
-            none,
-            MsFlags::MS_BIND | MsFlags::MS_REC,
-            none,
-        )?;
+fn mount_dropzone(dz: &Path, staging: &Path) -> Result<()> {
+    let none: Option<&str> = None;
+    let workspace_target = staging.join("workspace");
+    fs::create_dir_all(&workspace_target).context("Failed to create /workspace")?;
 
-        mount(
-            none,
-            &workspace_target,
-            none,
-            MsFlags::MS_REMOUNT | MsFlags::MS_BIND | MsFlags::MS_RDONLY | MsFlags::MS_REC,
-            none,
-        )?;
-        println!(
-            "Child: Mounted dropzone {:?} to /workspace (read-only).",
-            dz
-        );
-    }
+    mount(
+        Some(dz),
+        &workspace_target,
+        none,
+        MsFlags::MS_BIND | MsFlags::MS_REC,
+        none,
+    )?;
+    mount(
+        none,
+        &workspace_target,
+        none,
+        MsFlags::MS_REMOUNT | MsFlags::MS_BIND | MsFlags::MS_RDONLY | MsFlags::MS_REC,
+        none,
+    )?;
 
-    chdir(staging).context("Failed to chdir to staging")?;
+    println!(
+        "Child: Mounted dropzone {:?} to /workspace (read-only).",
+        dz
+    );
+    Ok(())
+}
 
-    fs::create_dir_all("put_old").context("Failed to create put_old")?;
-    pivot_root(".", "put_old").context("Failed to pivot_root")?;
-
-    chdir("/").context("Failed to chdir to / after pivot")?;
-
-    umount2("/put_old", MntFlags::MNT_DETACH).context("Failed to unmount old root")?;
-    fs::remove_dir("/put_old").ok();
-
-    println!("Child: Filesystem isolated successfully.");
+fn mount_network_and_fonts(staging: &Path) -> Result<()> {
+    let none: Option<&str> = None;
 
     if Path::new("/etc/fonts").exists() {
         let fonts_target = staging.join("etc/fonts");
@@ -252,6 +353,15 @@ pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Resu
             &fonts_target,
             none,
             MsFlags::MS_BIND | MsFlags::MS_REC,
+            none,
+        )
+        .ok();
+
+        mount(
+            none,
+            &fonts_target,
+            none,
+            MsFlags::MS_REMOUNT | MsFlags::MS_BIND | MsFlags::MS_RDONLY | MsFlags::MS_REC,
             none,
         )
         .ok();
@@ -286,8 +396,30 @@ pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Resu
                 none,
             )
             .ok();
+            mount(
+                none,
+                &target,
+                none,
+                MsFlags::MS_REMOUNT | MsFlags::MS_BIND | MsFlags::MS_RDONLY | MsFlags::MS_REC,
+                none,
+            )
+            .ok();
         }
     }
+
+    Ok(())
+}
+
+fn finalize_pivot_root(staging: &Path) -> Result<()> {
+    chdir(staging).context("Failed to chdir to staging")?;
+
+    fs::create_dir_all("put_old").context("Failed to create put_old")?;
+    pivot_root(".", "put_old").context("Failed to pivot_root")?;
+
+    chdir("/").context("Failed to chdir to / after pivot")?;
+
+    umount2("/put_old", MntFlags::MNT_DETACH).context("Failed to unmount old root")?;
+    fs::remove_dir("/put_old").ok();
 
     Ok(())
 }

@@ -109,14 +109,46 @@ pub fn start_sandbox(
         .context("Failed to signal child")?;
     drop(setup_write_file);
 
+    let mut fuse_pid_tracked = None;
+    let mut child_exec_failed = false;
+
+    loop {
+        let mut type_buf = [0u8; 1];
+        match error_read_file.read_exact(&mut type_buf) {
+            Ok(_) => {
+                let mut data_buf = [0u8; 4];
+                if let Ok(_) = error_read_file.read_exact(&mut data_buf) {
+                    if type_buf[0] == 1 {
+                        let f_pid = u32::from_le_bytes(data_buf);
+                        println!(
+                            "Supervisor: Tracking fuse-overlayfs daemon (Namespace PID: {})",
+                            f_pid
+                        );
+                        fuse_pid_tracked = Some(f_pid);
+                    } else if type_buf[0] == 2 {
+                        let exit_code = i32::from_le_bytes(data_buf);
+                        eprintln!("Supervisor: Child handoff failed with errno: {}", exit_code);
+                        child_exec_failed = true;
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                break;
+            }
+            Err(_) => break,
+        }
+    }
+
     let status = waitpid(child_pid, None).context("Failed to wait for child")?;
 
-    let mut err_buf = [0u8; 4];
+    if let Some(pid) = fuse_pid_tracked {
+        println!(
+            "Supervisor: FUSE daemon {} safely reaped by namespace destruction.",
+            pid
+        );
+    }
 
-    if let Ok(4) = error_read_file.read(&mut err_buf) {
-        let exit_code = i32::from_le_bytes(err_buf);
-        eprintln!("Supervisor: Child handoff failed with errno: {}", exit_code);
-    } else {
+    if !child_exec_failed {
         match status {
             nix::sys::wait::WaitStatus::Exited(_, code) => {
                 if code == 0 {

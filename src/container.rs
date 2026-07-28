@@ -34,9 +34,21 @@ pub fn entrypoint(
         return 1;
     }
 
-    if let Err(e) = crate::fs::isolate_filesystem(&config.profile.name, dropzone) {
-        eprintln!("Child: Filesystem setup failed: {:?}", e);
-        return 1;
+    let fs_result = match crate::fs::isolate_filesystem(&config.profile.name, dropzone) {
+        Ok(res) => res,
+        Err(e) => {
+            eprintln!("Child: Filesystem setup failed: {:?}", e);
+            return 1;
+        }
+    };
+
+    if let Some(pid) = fs_result.fuse_pid {
+        let mut err_pipe = unsafe { std::fs::File::from_raw_fd(error_write_fd) };
+        let mut msg = vec![1u8];
+        msg.extend_from_slice(&pid.to_le_bytes());
+        let _ = err_pipe.write_all(&msg);
+
+        std::mem::forget(err_pipe);
     }
 
     if !config.network.allow_network {
@@ -82,8 +94,13 @@ pub fn entrypoint(
     }
     unsafe {
         std::env::set_var("PATH", "/usr/bin:/usr/local/bin:/bin:/sbin");
-        std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
         std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
+
+        if let Some(socket) = &fs_result.wayland_socket {
+            std::env::set_var("WAYLAND_DISPLAY", socket);
+        } else {
+            std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
+        }
 
         std::env::set_var("HOME", "/home/user");
         std::env::set_var("USER", "root");
@@ -130,12 +147,16 @@ pub fn entrypoint(
 
     println!("Child: Handing off execution to {:?}", exec_args);
 
+    let _ = nix::unistd::setsid();
+
     let e = execvp(&exec_bin, &exec_args).unwrap_err();
     eprintln!("Child: execvp failed: {:?}", e);
 
     let mut err_pipe = unsafe { std::fs::File::from_raw_fd(error_write_fd) };
     let err_code = e as i32;
-    let _ = err_pipe.write_all(&err_code.to_le_bytes());
+    let mut msg = vec![2u8];
+    msg.extend_from_slice(&err_code.to_le_bytes());
+    let _ = err_pipe.write_all(&msg);
 
     1
 }
