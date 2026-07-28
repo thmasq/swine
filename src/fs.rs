@@ -178,7 +178,7 @@ fn mount_pseudo_filesystems(staging: &Path) -> Result<()> {
         Some("tmpfs"),
         &tmp_target,
         Some("tmpfs"),
-        MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
         Some("mode=1777"),
     )
     .context("Failed to mount /tmp")?;
@@ -378,7 +378,7 @@ fn mount_network_and_fonts(staging: &Path) -> Result<()> {
             MsFlags::MS_BIND | MsFlags::MS_REC,
             none,
         )
-        .ok();
+        .context("Failed to bind-mount /etc/fonts")?;
 
         mount(
             none,
@@ -387,7 +387,7 @@ fn mount_network_and_fonts(staging: &Path) -> Result<()> {
             MsFlags::MS_REMOUNT | MsFlags::MS_BIND | MsFlags::MS_RDONLY | MsFlags::MS_REC,
             none,
         )
-        .ok();
+        .context("Failed to remount /etc/fonts read-only")?;
     }
 
     let net_files = [
@@ -418,7 +418,7 @@ fn mount_network_and_fonts(staging: &Path) -> Result<()> {
                 MsFlags::MS_BIND | MsFlags::MS_REC,
                 none,
             )
-            .ok();
+            .with_context(|| format!("Failed to bind-mount {}", file))?;
             mount(
                 none,
                 &target,
@@ -426,7 +426,7 @@ fn mount_network_and_fonts(staging: &Path) -> Result<()> {
                 MsFlags::MS_REMOUNT | MsFlags::MS_BIND | MsFlags::MS_RDONLY | MsFlags::MS_REC,
                 none,
             )
-            .ok();
+            .with_context(|| format!("Failed to remount {} read-only", file))?;
         }
     }
 
