@@ -166,3 +166,15 @@ impl Config {
         Ok(())
     }
 }
+
+pub fn validate_profile_name(name: &str) -> anyhow::Result<()> {
+    if name.is_empty() || name.len() > 64 {
+        anyhow::bail!("Profile name must be between 1 and 64 characters.");
+    }
+    for c in name.chars() {
+        if !c.is_ascii_alphanumeric() && c != '-' && c != '_' {
+            anyhow::bail!("Invalid character in profile name: '{}'", c);
+        }
+    }
+    Ok(())
+}

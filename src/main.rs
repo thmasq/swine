@@ -120,6 +120,7 @@ fn main() -> Result<()> {
             exe,
             args,
         } => {
+            config::validate_profile_name(&profile)?;
             let mut parsed_config = config::Config::load(&profile)?;
 
             if net {
@@ -184,6 +185,7 @@ fn main() -> Result<()> {
             }
 
             ProfileCommands::Create { name } => {
+                config::validate_profile_name(&name)?;
                 let profiles_dir = config::Config::get_profiles_dir();
                 let path = profiles_dir.join(format!("{}.toml", name));
 
@@ -201,6 +203,7 @@ fn main() -> Result<()> {
             }
 
             ProfileCommands::Reset { name } => {
+                config::validate_profile_name(&name)?;
                 let data_dir = config::Config::get_data_dir(&name);
 
                 if data_dir.exists() {
