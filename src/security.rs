@@ -36,7 +36,6 @@ pub fn lockdown(config: &crate::config::SandboxConfig) -> Result<()> {
     let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
 
     ctx.add_arch(libseccomp::ScmpArch::X86)?;
-    ctx.add_arch(libseccomp::ScmpArch::X32)?;
     ctx.add_arch(libseccomp::ScmpArch::X8664)?;
 
     let blocked_syscalls = [
