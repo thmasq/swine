@@ -76,6 +76,12 @@ enum ProfileCommands {
 }
 
 fn main() -> Result<()> {
+    if nix::unistd::getuid().is_root() {
+        anyhow::bail!(
+            "swine must not be run as root. The sandbox relies on unprivileged user namespaces."
+        );
+    }
+
     let cli = Cli::parse();
 
     match cli.command {

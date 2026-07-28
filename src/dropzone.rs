@@ -43,9 +43,14 @@ fn calculate_dir_stats(dir: &Path) -> Result<(u64, u64)> {
     if dir.is_dir() {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                let (c, s) = calculate_dir_stats(&path)?;
+            let file_type = entry.file_type()?;
+
+            if file_type.is_symlink() {
+                continue;
+            }
+
+            if file_type.is_dir() {
+                let (c, s) = calculate_dir_stats(&entry.path())?;
                 count += c;
                 size += s;
             } else {

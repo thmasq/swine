@@ -25,7 +25,7 @@ pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Resu
 
     mount_overlay_binds(profile_name, staging)?;
 
-    let wayland_socket = proxy_wayland_sockets(staging)?;
+    let wayland_socket = proxy_sockets(staging)?;
 
     if let Some(dz) = dropzone {
         mount_dropzone(&dz, staging)?;
@@ -134,6 +134,21 @@ fn mount_pseudo_filesystems(staging: &Path) -> Result<()> {
     {
         mount(Some("/sys"), &sys_target, none, MsFlags::MS_BIND, none)
             .context("Failed to bind-mount host /sys as fallback")?;
+
+        mount(
+            none,
+            &sys_target,
+            none,
+            MsFlags::MS_REMOUNT
+                | MsFlags::MS_BIND
+                | MsFlags::MS_RDONLY
+                | MsFlags::MS_REC
+                | MsFlags::MS_NOSUID
+                | MsFlags::MS_NODEV
+                | MsFlags::MS_NOEXEC,
+            none,
+        )
+        .context("Failed to remount host /sys read-only")?;
     }
 
     let shm_target = staging.join("dev/shm");
@@ -275,12 +290,38 @@ fn mount_overlay_fs_post_pivot() -> Result<Option<u32>> {
     Ok(fuse_pid)
 }
 
-fn proxy_wayland_sockets(staging: &Path) -> Result<Option<String>> {
+fn proxy_sockets(staging: &Path) -> Result<Option<String>> {
     let none: Option<&str> = None;
     let mut wayland_socket = None;
 
     if let Ok(xdg_runtime) = std::env::var("XDG_RUNTIME_DIR") {
         let xdg_dir = Path::new(&xdg_runtime);
+
+        let audio_sockets = ["pipewire-0", "pulse/native"];
+        for socket_path in audio_sockets {
+            let source = xdg_dir.join(socket_path);
+            if source.exists() {
+                let target = staging.join("run/user/1000").join(socket_path);
+
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent).ok();
+                }
+                fs::File::create(&target).ok();
+
+                if mount(
+                    Some(&source),
+                    &target,
+                    none,
+                    MsFlags::MS_BIND | MsFlags::MS_REC,
+                    none,
+                )
+                .is_ok()
+                {
+                    println!("Child: Proxied Audio socket ({}) to sandbox.", socket_path);
+                }
+            }
+        }
+
         if let Ok(entries) = std::fs::read_dir(xdg_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
