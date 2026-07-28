@@ -35,25 +35,27 @@ pub fn entrypoint(
     }
 
     let mut wayland_fd_env = None;
-    if let Ok(xdg_runtime) = std::env::var("XDG_RUNTIME_DIR") {
-        let host_socket =
-            std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
-        let socket_path = std::path::Path::new(&xdg_runtime).join(host_socket);
+    if config.graphics.gamescope {
+        if let Ok(xdg_runtime) = std::env::var("XDG_RUNTIME_DIR") {
+            let host_socket =
+                std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+            let socket_path = std::path::Path::new(&xdg_runtime).join(host_socket);
 
-        if let Ok(stream) = std::os::unix::net::UnixStream::connect(&socket_path) {
-            use std::os::unix::io::IntoRawFd;
-            let fd = stream.into_raw_fd();
+            if let Ok(stream) = std::os::unix::net::UnixStream::connect(&socket_path) {
+                use std::os::unix::io::IntoRawFd;
+                let fd = stream.into_raw_fd();
 
-            unsafe {
-                let flags = nix::libc::fcntl(fd, nix::libc::F_GETFD);
-                if flags >= 0 {
-                    nix::libc::fcntl(fd, nix::libc::F_SETFD, flags & !nix::libc::FD_CLOEXEC);
+                unsafe {
+                    let flags = nix::libc::fcntl(fd, nix::libc::F_GETFD);
+                    if flags >= 0 {
+                        nix::libc::fcntl(fd, nix::libc::F_SETFD, flags & !nix::libc::FD_CLOEXEC);
+                    }
                 }
+                wayland_fd_env = Some(fd.to_string());
+                println!("Child: Extracted host Wayland FD {} via UnixStream.", fd);
+            } else {
+                eprintln!("Child: WARNING: Failed to connect to host Wayland socket.");
             }
-            wayland_fd_env = Some(fd.to_string());
-            println!("Child: Extracted host Wayland FD {} via UnixStream.", fd);
-        } else {
-            eprintln!("Child: WARNING: Failed to connect to host Wayland socket.");
         }
     }
 
