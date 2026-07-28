@@ -108,18 +108,20 @@ pub fn lockdown(config: &crate::config::SandboxConfig) -> Result<()> {
         ];
 
         for syscall_name in &blocked_syscalls {
-            if let Ok(syscall) = ScmpSyscall::from_name(syscall_name) {
-                let errno: i32 = if *syscall_name == "clone3" {
-                    nix::libc::ENOSYS
-                } else {
-                    nix::libc::EPERM
-                };
+            let syscall = ScmpSyscall::from_name(syscall_name)
+                .with_context(|| format!("Failed to resolve syscall '{}'", syscall_name))?;
 
-                let _ = ctx.add_rule(ScmpAction::Errno(errno), syscall);
-            }
+            let errno: i32 = if *syscall_name == "clone3" {
+                nix::libc::ENOSYS
+            } else {
+                nix::libc::EPERM
+            };
+
+            ctx.add_rule(ScmpAction::Errno(errno), syscall)
+                .with_context(|| format!("Failed to add seccomp rule for '{}'", syscall_name))?;
         }
 
-        // A. SOCKET: Block AF_ALG (38) and AF_VSOCK (40)
+        // SOCKET: Block AF_ALG (38) and AF_VSOCK (40)
         // socket(domain, type, protocol). 'domain' is argument 0.
         if let Ok(socket_syscall) = ScmpSyscall::from_name("socket") {
             ctx.add_rule_conditional(
@@ -134,7 +136,7 @@ pub fn lockdown(config: &crate::config::SandboxConfig) -> Result<()> {
             )?;
         }
 
-        // B. CLONE: Block creation of namespaces, but allow normal multithreading
+        // CLONE: Block creation of namespaces, but allow normal multithreading
         // clone(flags, ...). 'flags' is argument 0.
         if let Ok(clone_syscall) = ScmpSyscall::from_name("clone") {
             let forbidden_clone_flags: [u64; 8] = [
@@ -160,7 +162,7 @@ pub fn lockdown(config: &crate::config::SandboxConfig) -> Result<()> {
             }
         }
 
-        // C. IOCTL: Explicitly block TIOCSTI (0x5412) to prevent terminal injection
+        // IOCTL: Explicitly block TIOCSTI (0x5412) to prevent terminal injection
         // ioctl(fd, request, ...). 'request' is argument 1.
         if let Ok(ioctl_syscall) = ScmpSyscall::from_name("ioctl") {
             ctx.add_rule_conditional(
