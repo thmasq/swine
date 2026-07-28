@@ -101,7 +101,12 @@ fn main() -> Result<()> {
 
             let status = std::process::Command::new("wineboot")
                 .arg("-u")
+                .env_clear()
                 .env("WINEPREFIX", &base_prefix)
+                .env("HOME", "/home/user")
+                .env("USER", "root")
+                .env("LOGNAME", "root")
+                .env("PATH", "/usr/bin:/usr/local/bin:/bin:/sbin")
                 .status()
                 .context("Failed to execute wineboot")?;
 
