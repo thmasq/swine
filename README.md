@@ -150,4 +150,6 @@ DXVK_HUD = "compiler"
 
 1. **Kernel Zero-Day Exploits:** If an untrusted binary contains exploit code targeting a Linux syscall allowed by the Seccomp filter, `swine` cannot prevent execution at the kernel level.
 2. **Open-Source GPU Driver Vulnerabilities:** Because `/dev/dri` must be exposed for 3D acceleration, malicious code targeting vulnerabilities inside Mesa drivers falls outside this boundary. Proprietary Nvidia driver nodes are strictly excluded.
-3. **Physical Hardware Controllers:** Direct passthrough of `/dev/input` hardware nodes is omitted in V1 to avoid keylogging vectors; all mouse and keyboard inputs are proxied via Wayland/Gamescope.
+3. **Host Wayland Compositor and Audio Surface:** The Wayland FD and PulseAudio sockets are deliberately proxied to allow GUI and audio. A vulnerability in the host compositor, Gamescope itself, or the audio daemon via protocol fuzzing is a
+  plausible escape path and an accepted boundary.
+4. **Physical Hardware Controllers:** Direct passthrough of `/dev/input` hardware nodes is omitted in V1 to avoid keylogging vectors; all mouse and keyboard inputs are proxied via Wayland/Gamescope.
