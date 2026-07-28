@@ -246,7 +246,12 @@ fn mount_overlay_binds(profile_name: &str, staging: &Path) -> Result<()> {
         none,
         &overlay_base.join("lower"),
         none,
-        MsFlags::MS_REMOUNT | MsFlags::MS_BIND | MsFlags::MS_RDONLY | MsFlags::MS_REC,
+        MsFlags::MS_REMOUNT
+            | MsFlags::MS_BIND
+            | MsFlags::MS_RDONLY
+            | MsFlags::MS_REC
+            | MsFlags::MS_NOSUID
+            | MsFlags::MS_NODEV,
         none,
     )?;
 
@@ -270,7 +275,7 @@ fn mount_overlay_fs_post_pivot() -> Result<Option<u32>> {
         Some("overlay"),
         wine_prefix_target,
         Some("overlay"),
-        MsFlags::empty(),
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
         Some(overlay_options),
     ) {
         println!(
@@ -279,8 +284,9 @@ fn mount_overlay_fs_post_pivot() -> Result<Option<u32>> {
         );
 
         let mut child = std::process::Command::new("fuse-overlayfs")
+            .arg("-f")
             .arg("-o")
-            .arg(overlay_options)
+            .arg(format!("{},nosuid,nodev", overlay_options))
             .arg(wine_prefix_target)
             .spawn()
             .context("Failed to spawn fuse-overlayfs fallback")?;
