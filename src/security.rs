@@ -33,6 +33,7 @@ pub fn lockdown(config: &crate::config::SandboxConfig) -> Result<()> {
         let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
 
         ctx.add_arch(libseccomp::ScmpArch::X86)?;
+        ctx.add_arch(libseccomp::ScmpArch::X32)?;
 
         let blocked_syscalls = [
             "ptrace",
@@ -136,10 +137,13 @@ pub fn lockdown(config: &crate::config::SandboxConfig) -> Result<()> {
         // B. CLONE: Block creation of namespaces, but allow normal multithreading
         // clone(flags, ...). 'flags' is argument 0.
         if let Ok(clone_syscall) = ScmpSyscall::from_name("clone") {
-            let forbidden_clone_flags: [u64; 5] = [
+            let forbidden_clone_flags: [u64; 8] = [
+                0x00000080, // CLONE_NEWTIME
+                0x02000000, // CLONE_NEWCGROUP
                 0x00020000, // CLONE_NEWNS
                 0x04000000, // CLONE_NEWUTS
                 0x08000000, // CLONE_NEWIPC
+                0x10000000, // CLONE_NEWUSER
                 0x20000000, // CLONE_NEWPID
                 0x40000000, // CLONE_NEWNET
             ];

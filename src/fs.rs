@@ -99,7 +99,12 @@ fn mount_host_system_dirs(staging: &Path) -> Result<()> {
                 none,
                 &target,
                 none,
-                MsFlags::MS_REMOUNT | MsFlags::MS_BIND | MsFlags::MS_RDONLY | MsFlags::MS_REC,
+                MsFlags::MS_REMOUNT
+                    | MsFlags::MS_BIND
+                    | MsFlags::MS_RDONLY
+                    | MsFlags::MS_REC
+                    | MsFlags::MS_NOSUID
+                    | MsFlags::MS_NODEV,
                 none,
             )?;
         }
