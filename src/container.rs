@@ -119,6 +119,16 @@ pub fn entrypoint(
 
     println!("Child: Preparing for execve...");
 
+    if let Some(parent) = exe.parent() {
+        if parent.as_os_str() != "" {
+            if let Err(e) = nix::unistd::chdir(parent) {
+                eprintln!("Child: WARNING: Failed to chdir to {:?}: {}", parent, e);
+            } else {
+                println!("Child: Changed working directory to {:?}", parent);
+            }
+        }
+    }
+
     let _ = nix::unistd::sethostname("swine");
 
     unsafe {

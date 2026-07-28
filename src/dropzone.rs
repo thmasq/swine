@@ -1,7 +1,71 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+pub fn validate_dropzone(dropzone_path: &Path) -> Result<()> {
+    let canonical =
+        fs::canonicalize(dropzone_path).context("Failed to canonicalize dropzone path")?;
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| String::from("/nonexistent"));
+    let home_path = Path::new(&home);
+
+    let mut blocked_paths = vec![
+        PathBuf::from("/"),
+        PathBuf::from("/home"),
+        PathBuf::from("/etc"),
+        PathBuf::from("/var"),
+        PathBuf::from("/usr"),
+        PathBuf::from("/sys"),
+        PathBuf::from("/proc"),
+        PathBuf::from("/dev"),
+        home_path.to_path_buf(),
+        home_path.join(".ssh"),
+        home_path.join(".gnupg"),
+        home_path.join(".config"),
+        home_path.join(".local"),
+        home_path.join(".pki"),
+    ];
+
+    let common_xdg = [
+        "Desktop",
+        "Documents",
+        "Downloads",
+        "Music",
+        "Pictures",
+        "Public",
+        "Templates",
+        "Videos",
+    ];
+    for dir in &common_xdg {
+        blocked_paths.push(home_path.join(dir));
+    }
+
+    if let Ok(content) = fs::read_to_string(home_path.join(".config/user-dirs.dirs")) {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.starts_with("XDG_") && line.contains("=\"$HOME/") {
+                if let Some(split) = line.split("=\"$HOME/").nth(1) {
+                    let dir_name = split.trim_end_matches('"');
+                    blocked_paths.push(home_path.join(dir_name));
+                }
+            }
+        }
+    }
+
+    for blocked in &blocked_paths {
+        if let Ok(canon_blocked) = fs::canonicalize(blocked) {
+            if canon_blocked == canonical {
+                anyhow::bail!(
+                    "Security: Refusing to mount sensitive directory {:?} as a dropzone.\nPlease place the executable in a dedicated subdirectory to isolate it.",
+                    canonical
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
 
 pub fn check_and_prompt(dropzone_path: &Path, allow_dropzone: bool) -> Result<bool> {
     if !dropzone_path.exists() || !dropzone_path.is_dir() {

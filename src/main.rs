@@ -135,21 +135,53 @@ fn main() -> Result<()> {
                 parsed_config.graphics.resolution = resolution;
             }
 
+            let host_exe = std::fs::canonicalize(&exe)
+                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(&exe));
+
+            let mut final_dropzone = dropzone.clone();
+
+            if final_dropzone.is_none() {
+                if let Some(parent) = host_exe.parent() {
+                    if !host_exe.starts_with("/usr")
+                        && !host_exe.starts_with("/bin")
+                        && !host_exe.starts_with("/lib")
+                    {
+                        final_dropzone = Some(parent.to_path_buf());
+                        println!("Auto-detected dropzone: {:?}", parent);
+                    }
+                }
+            }
+
+            let mut container_exe = exe.clone();
+            if let Some(dz) = &final_dropzone {
+                let dz_canonical = std::fs::canonicalize(dz).unwrap_or_else(|_| dz.clone());
+                if host_exe.starts_with(&dz_canonical) {
+                    if let Ok(stripped) = host_exe.strip_prefix(&dz_canonical) {
+                        container_exe = std::path::PathBuf::from("/workspace").join(stripped);
+                    }
+                }
+            } else {
+                container_exe = host_exe;
+            }
+            // ----------------------------------------
+
             if dry_run {
                 println!("--- DRY RUN ---");
                 println!(
                     "Loaded config for profile '{}': {:#?}",
                     parsed_config.profile.name, parsed_config
                 );
-                println!("Executable: {:?}", exe);
+                println!("Executable: {:?}", container_exe);
                 println!("Args: {:?}", args);
-                if let Some(dz) = &dropzone {
+                if let Some(dz) = &final_dropzone {
                     println!("Dropzone: {:?}", dz);
                 }
                 return Ok(());
             }
 
-            if let Some(dz_path) = &dropzone {
+            if let Some(dz_path) = &final_dropzone {
+                dropzone::validate_dropzone(dz_path)?;
+
                 let proceed = dropzone::check_and_prompt(dz_path, allow_dropzone)?;
                 if !proceed {
                     println!("Aborting due to user cancellation.");
@@ -157,8 +189,8 @@ fn main() -> Result<()> {
                 }
             }
 
-            println!("Running executable: {:?}", exe);
-            supervisor::start_sandbox(&parsed_config, exe.clone(), args.clone(), dropzone)?;
+            println!("Running executable: {:?}", container_exe);
+            supervisor::start_sandbox(&parsed_config, container_exe, args, final_dropzone)?;
         }
 
         Commands::Profile { command } => match command {
