@@ -15,6 +15,13 @@ pub fn entrypoint(
 ) -> isize {
     println!("Child: Starting namespace initialization...");
 
+    unsafe {
+        nix::libc::prctl(
+            nix::libc::PR_SET_PDEATHSIG,
+            nix::libc::SIGKILL as libc::c_ulong,
+        );
+    }
+
     let setup_fd = unsafe { BorrowedFd::borrow_raw(setup_read_fd) };
 
     let mut buf = [0u8; 1];
@@ -99,14 +106,16 @@ pub fn entrypoint(
         return 1;
     }
 
-    println!("Child: Testing Seccomp filter (calling ptrace)...");
-    match nix::sys::ptrace::traceme() {
-        Ok(_) => {
-            eprintln!("Child: WARNING: ptrace succeeded! Seccomp filter failed.");
-            return 1;
-        }
-        Err(e) => {
-            println!("Child: Seccomp successfully blocked ptrace with: {}", e);
+    if config.sandbox.seccomp_strict {
+        println!("Child: Testing Seccomp filter (calling ptrace)...");
+        match nix::sys::ptrace::traceme() {
+            Ok(_) => {
+                eprintln!("Child: WARNING: ptrace succeeded! Seccomp filter failed.");
+                return 1;
+            }
+            Err(e) => {
+                println!("Child: Seccomp successfully blocked ptrace with: {}", e);
+            }
         }
     }
 
