@@ -133,7 +133,6 @@ memory_limit_mb = 8192      # Enforced via delegated Cgroups v2 memory.max
 cpu_quota_percent = 400     # Maximum CPU core consumption (400% = 4 cores)
 
 [sandbox]
-seccomp_strict = true         # Blocks ptrace, keyctl, bpf, and unshare
 drop_all_caps = true          # Drops bounding capabilities before execve
 
 [environment]

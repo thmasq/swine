@@ -92,15 +92,12 @@ impl Default for ResourcesConfig {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SandboxConfig {
     #[serde(default = "default_true")]
-    pub seccomp_strict: bool,
-    #[serde(default = "default_true")]
     pub drop_all_caps: bool,
 }
 
 impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
-            seccomp_strict: true,
             drop_all_caps: true,
         }
     }

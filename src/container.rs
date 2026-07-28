@@ -106,16 +106,14 @@ pub fn entrypoint(
         return 1;
     }
 
-    if config.sandbox.seccomp_strict {
-        println!("Child: Testing Seccomp filter (calling ptrace)...");
-        match nix::sys::ptrace::traceme() {
-            Ok(_) => {
-                eprintln!("Child: WARNING: ptrace succeeded! Seccomp filter failed.");
-                return 1;
-            }
-            Err(e) => {
-                println!("Child: Seccomp successfully blocked ptrace with: {}", e);
-            }
+    println!("Child: Testing Seccomp filter (calling ptrace)...");
+    match nix::sys::ptrace::traceme() {
+        Ok(_) => {
+            eprintln!("Child: WARNING: ptrace succeeded! Seccomp filter failed.");
+            return 1;
+        }
+        Err(e) => {
+            println!("Child: Seccomp successfully blocked ptrace with: {}", e);
         }
     }
 
