@@ -15,24 +15,25 @@ pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Resu
     mount(none, "/", none, MsFlags::MS_PRIVATE | MsFlags::MS_REC, none)
         .context("Failed to remount / as private")?;
 
-    let staging = Path::new("/tmp/swine_root");
+    let xdg_runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+    let staging = PathBuf::from(xdg_runtime).join("swine_root");
 
-    setup_staging_area(staging)?;
-    mount_host_system_dirs(staging)?;
-    mount_pseudo_filesystems(staging)?;
-    mount_dev_nodes(staging)?;
+    setup_staging_area(&staging)?;
+    mount_host_system_dirs(&staging)?;
+    mount_pseudo_filesystems(&staging)?;
+    mount_dev_nodes(&staging)?;
 
-    mount_overlay_binds(profile_name, staging)?;
+    mount_overlay_binds(profile_name, &staging)?;
 
-    proxy_audio_socket(staging)?;
+    proxy_audio_socket(&staging)?;
 
     if let Some(dz) = dropzone {
-        mount_dropzone(&dz, staging)?;
+        mount_dropzone(&dz, &staging)?;
     }
 
-    mount_network_and_fonts(staging)?;
+    mount_network_and_fonts(&staging)?;
 
-    finalize_pivot_root(staging)?;
+    finalize_pivot_root(&staging)?;
 
     let fuse_pid = mount_overlay_fs_post_pivot()?;
 
@@ -42,9 +43,17 @@ pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Resu
 }
 
 fn setup_staging_area(staging: &Path) -> Result<()> {
-    if !staging.exists() {
+    if let Ok(meta) = fs::symlink_metadata(staging) {
+        if !meta.is_dir() {
+            anyhow::bail!("Staging path exists but is not a directory (possible symlink attack)");
+        }
+    } else {
         fs::create_dir_all(staging).context("Failed to create staging dir")?;
     }
+
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(staging, fs::Permissions::from_mode(0o700))
+        .context("Failed to secure staging dir permissions")?;
 
     mount(
         Some("tmpfs"),
