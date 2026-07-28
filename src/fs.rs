@@ -142,6 +142,8 @@ fn mount_pseudo_filesystems(staging: &Path) -> Result<()> {
     )
     .is_err()
     {
+        println!("Child: WARNING: Using non-recursive fallback /sys bind mount.");
+
         mount(Some("/sys"), &sys_target, none, MsFlags::MS_BIND, none)
             .context("Failed to bind-mount host /sys as fallback")?;
 
@@ -152,7 +154,6 @@ fn mount_pseudo_filesystems(staging: &Path) -> Result<()> {
             MsFlags::MS_REMOUNT
                 | MsFlags::MS_BIND
                 | MsFlags::MS_RDONLY
-                | MsFlags::MS_REC
                 | MsFlags::MS_NOSUID
                 | MsFlags::MS_NODEV
                 | MsFlags::MS_NOEXEC,

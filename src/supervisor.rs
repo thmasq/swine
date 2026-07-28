@@ -11,13 +11,14 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 static CHILD_PID: AtomicI32 = AtomicI32::new(0);
+static SIGNAL_RECEIVED: AtomicI32 = AtomicI32::new(0);
 
 extern "C" fn handle_signal(sig: libc::c_int) {
     let pid = CHILD_PID.load(Ordering::SeqCst);
     if pid > 0 {
         let _ = signal::kill(nix::unistd::Pid::from_raw(pid), Signal::SIGKILL);
     }
-    unsafe { nix::libc::_exit(128 + sig) };
+    SIGNAL_RECEIVED.store(sig, Ordering::SeqCst);
 }
 
 pub fn start_sandbox(
@@ -100,7 +101,7 @@ pub fn start_sandbox(
     let _ = std::fs::write(&setgroups_path, "deny\n");
     std::fs::write(&gid_map_path, gid_map).context("Failed to write gid_map")?;
 
-    crate::cgroup::enforce_limits(&config.resources, child_pid)?;
+    let cgroup_path = crate::cgroup::enforce_limits(&config.resources, child_pid)?;
 
     println!("Supervisor: Wrote UID/GID maps and Cgroups. Unblocking child...");
 
@@ -139,13 +140,42 @@ pub fn start_sandbox(
         }
     }
 
-    let status = waitpid(child_pid, None).context("Failed to wait for child")?;
+    let status = match waitpid(child_pid, None) {
+        Ok(s) => s,
+        Err(e) if e == nix::errno::Errno::EINTR => {
+            waitpid(child_pid, None).context("Failed to wait for child after EINTR")?
+        }
+        Err(e) => return Err(e).context("Failed to wait for child"),
+    };
 
     if let Some(pid) = fuse_pid_tracked {
         println!(
             "Supervisor: FUSE daemon {} safely reaped by namespace destruction.",
             pid
         );
+    }
+
+    if cgroup_path.exists() {
+        let mut attempts = 0;
+        loop {
+            match std::fs::remove_dir(&cgroup_path) {
+                Ok(_) => {
+                    println!("Supervisor: Cleaned up cgroup at {:?}", cgroup_path);
+                    break;
+                }
+                Err(_) if attempts < 5 => {
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Supervisor: Failed to remove cgroup at {:?}: {}",
+                        cgroup_path, e
+                    );
+                    break;
+                }
+            }
+        }
     }
 
     if !child_exec_failed {
@@ -170,6 +200,11 @@ pub fn start_sandbox(
                 );
             }
         }
+    }
+
+    let sig = SIGNAL_RECEIVED.load(Ordering::SeqCst);
+    if sig != 0 {
+        std::process::exit(128 + sig);
     }
 
     Ok(())

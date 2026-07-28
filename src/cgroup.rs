@@ -3,7 +3,7 @@ use nix::unistd::Pid;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub fn enforce_limits(config: &crate::config::ResourcesConfig, child_pid: Pid) -> Result<()> {
+pub fn enforce_limits(config: &crate::config::ResourcesConfig, child_pid: Pid) -> Result<PathBuf> {
     let cgroup_path = get_current_cgroup()?;
     let swine_cgroup = cgroup_path.join(format!("swine-{}", child_pid));
 
@@ -47,7 +47,7 @@ pub fn enforce_limits(config: &crate::config::ResourcesConfig, child_pid: Pid) -
         swine_cgroup
     );
 
-    Ok(())
+    Ok(swine_cgroup)
 }
 
 fn get_current_cgroup() -> Result<PathBuf> {
