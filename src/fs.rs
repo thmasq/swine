@@ -5,7 +5,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub struct FsSetupResult {
-    pub wayland_socket: Option<String>,
     pub fuse_pid: Option<u32>,
 }
 
@@ -25,7 +24,7 @@ pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Resu
 
     mount_overlay_binds(profile_name, staging)?;
 
-    let wayland_socket = proxy_sockets(staging)?;
+    proxy_audio_socket(staging)?;
 
     if let Some(dz) = dropzone {
         mount_dropzone(&dz, staging)?;
@@ -39,10 +38,7 @@ pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Resu
 
     println!("Child: Filesystem isolated successfully.");
 
-    Ok(FsSetupResult {
-        wayland_socket,
-        fuse_pid,
-    })
+    Ok(FsSetupResult { fuse_pid })
 }
 
 fn setup_staging_area(staging: &Path) -> Result<()> {
@@ -295,70 +291,35 @@ fn mount_overlay_fs_post_pivot() -> Result<Option<u32>> {
     Ok(fuse_pid)
 }
 
-fn proxy_sockets(staging: &Path) -> Result<Option<String>> {
+fn proxy_audio_socket(staging: &Path) -> Result<()> {
     let none: Option<&str> = None;
-    let mut wayland_socket = None;
 
     if let Ok(xdg_runtime) = std::env::var("XDG_RUNTIME_DIR") {
         let xdg_dir = Path::new(&xdg_runtime);
 
-        let audio_sockets = ["pipewire-0", "pulse/native"];
-        for socket_path in audio_sockets {
-            let source = xdg_dir.join(socket_path);
-            if source.exists() {
-                let target = staging.join("run/user/1000").join(socket_path);
+        let source = xdg_dir.join("pulse/native");
+        if source.exists() {
+            let target = staging.join("run/user/1000/pulse/native");
 
-                if let Some(parent) = target.parent() {
-                    fs::create_dir_all(parent).ok();
-                }
-                fs::File::create(&target).ok();
-
-                if mount(
-                    Some(&source),
-                    &target,
-                    none,
-                    MsFlags::MS_BIND | MsFlags::MS_REC,
-                    none,
-                )
-                .is_ok()
-                {
-                    println!("Child: Proxied Audio socket ({}) to sandbox.", socket_path);
-                }
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).ok();
             }
-        }
+            fs::File::create(&target).ok();
 
-        if let Ok(entries) = std::fs::read_dir(xdg_dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-
-                if name.starts_with("wayland-") && !name.ends_with(".lock") {
-                    let source = entry.path();
-                    let target_dir = staging.join("run/user/1000");
-                    fs::create_dir_all(&target_dir).ok();
-
-                    let target = target_dir.join(&name);
-                    fs::File::create(&target).ok();
-
-                    if mount(
-                        Some(&source),
-                        &target,
-                        none,
-                        MsFlags::MS_BIND | MsFlags::MS_REC,
-                        none,
-                    )
-                    .is_ok()
-                    {
-                        println!("Child: Proxied Wayland socket ({}) to sandbox.", name);
-                        if wayland_socket.is_none() {
-                            wayland_socket = Some(name);
-                        }
-                    }
-                }
+            if mount(
+                Some(&source),
+                &target,
+                none,
+                MsFlags::MS_BIND | MsFlags::MS_REC,
+                none,
+            )
+            .is_ok()
+            {
+                println!("Child: Proxied PulseAudio socket to sandbox.");
             }
         }
     }
-
-    Ok(wayland_socket)
+    Ok(())
 }
 
 fn mount_dropzone(dz: &Path, staging: &Path) -> Result<()> {
