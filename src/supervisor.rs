@@ -21,6 +21,39 @@ extern "C" fn handle_signal(sig: libc::c_int) {
     SIGNAL_RECEIVED.store(sig, Ordering::SeqCst);
 }
 
+struct ChildCleanup {
+    pid: nix::unistd::Pid,
+    cgroup_path: Option<PathBuf>,
+    reaped: bool,
+}
+
+impl Drop for ChildCleanup {
+    fn drop(&mut self) {
+        if !self.reaped {
+            if let Some(cg) = &self.cgroup_path {
+                let _ = std::fs::write(cg.join("cgroup.kill"), "1\n");
+            }
+            let _ = signal::kill(self.pid, Signal::SIGKILL);
+            let _ = waitpid(self.pid, None);
+        }
+
+        if let Some(cg) = &self.cgroup_path {
+            if cg.exists() {
+                let mut attempts = 0;
+                while std::fs::remove_dir(cg).is_err() && attempts < 5 {
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                if cg.exists() {
+                    eprintln!("Supervisor: Failed to remove cgroup at {:?}", cg);
+                } else {
+                    println!("Supervisor: Cleaned up cgroup at {:?}", cg);
+                }
+            }
+        }
+    }
+}
+
 pub fn start_sandbox(
     config: &crate::config::Config,
     exe: PathBuf,
@@ -53,6 +86,13 @@ pub fn start_sandbox(
     let args_clone = args.clone();
     let dropzone_clone = dropzone.clone();
 
+    let handler = SigHandler::Handler(handle_signal);
+    let action = SigAction::new(handler, SaFlags::SA_RESTART, SigSet::empty());
+    unsafe {
+        let _ = signal::sigaction(Signal::SIGINT, &action);
+        let _ = signal::sigaction(Signal::SIGTERM, &action);
+    }
+
     let child_pid = unsafe {
         clone(
             Box::new(move || {
@@ -79,12 +119,11 @@ pub fn start_sandbox(
 
     CHILD_PID.store(child_pid.as_raw(), Ordering::SeqCst);
 
-    let handler = SigHandler::Handler(handle_signal);
-    let action = SigAction::new(handler, SaFlags::SA_RESTART, SigSet::empty());
-    unsafe {
-        let _ = signal::sigaction(Signal::SIGINT, &action);
-        let _ = signal::sigaction(Signal::SIGTERM, &action);
-    }
+    let mut cleanup = ChildCleanup {
+        pid: child_pid,
+        cgroup_path: None,
+        reaped: false,
+    };
 
     let host_uid = nix::unistd::getuid();
     let host_gid = nix::unistd::getgid();
@@ -98,10 +137,11 @@ pub fn start_sandbox(
     std::fs::write(&uid_map_path, uid_map).context("Failed to write uid_map")?;
 
     let setgroups_path = format!("/proc/{}/setgroups", child_pid);
-    let _ = std::fs::write(&setgroups_path, "deny\n");
+    std::fs::write(&setgroups_path, "deny\n").context("Failed to write setgroups")?;
     std::fs::write(&gid_map_path, gid_map).context("Failed to write gid_map")?;
 
     let cgroup_path = crate::cgroup::enforce_limits(&config.resources, child_pid)?;
+    cleanup.cgroup_path = Some(cgroup_path.clone());
 
     println!("Supervisor: Wrote UID/GID maps and Cgroups. Unblocking child...");
 
@@ -155,28 +195,8 @@ pub fn start_sandbox(
         );
     }
 
-    if cgroup_path.exists() {
-        let mut attempts = 0;
-        loop {
-            match std::fs::remove_dir(&cgroup_path) {
-                Ok(_) => {
-                    println!("Supervisor: Cleaned up cgroup at {:?}", cgroup_path);
-                    break;
-                }
-                Err(_) if attempts < 5 => {
-                    attempts += 1;
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                }
-                Err(e) => {
-                    eprintln!(
-                        "Supervisor: Failed to remove cgroup at {:?}: {}",
-                        cgroup_path, e
-                    );
-                    break;
-                }
-            }
-        }
-    }
+    CHILD_PID.store(0, Ordering::SeqCst);
+    cleanup.reaped = true;
 
     if !child_exec_failed {
         match status {
@@ -204,6 +224,7 @@ pub fn start_sandbox(
 
     let sig = SIGNAL_RECEIVED.load(Ordering::SeqCst);
     if sig != 0 {
+        drop(cleanup);
         std::process::exit(128 + sig);
     }
 
