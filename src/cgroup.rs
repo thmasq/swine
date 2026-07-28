@@ -23,6 +23,9 @@ pub fn enforce_limits(config: &crate::config::ResourcesConfig, child_pid: Pid) -
             .unwrap_or_else(|e| eprintln!("Warning: Failed to set memory.max: {}", e));
     }
 
+    fs::write(swine_cgroup.join("memory.swap.max"), "0")
+        .unwrap_or_else(|e| eprintln!("Warning: Failed to set memory.swap.max: {}", e));
+
     if let Some(cpu_percent) = config.cpu_quota_percent {
         let max = cpu_percent * 1000;
         let period = 100000;
