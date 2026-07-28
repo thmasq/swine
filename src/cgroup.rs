@@ -35,6 +35,9 @@ pub fn enforce_limits(config: &crate::config::ResourcesConfig, child_pid: Pid) -
         });
     }
 
+    fs::write(swine_cgroup.join("pids.max"), "4096")
+        .unwrap_or_else(|e| eprintln!("Warning: Failed to set pids.max: {}", e));
+
     let procs_file = swine_cgroup.join("cgroup.procs");
     fs::write(&procs_file, child_pid.as_raw().to_string())
         .with_context(|| format!("Failed to write PID to {:?}", procs_file))?;
