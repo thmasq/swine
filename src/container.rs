@@ -85,7 +85,7 @@ pub fn entrypoint(
 
     if !config.network.allow_network {
         println!("Child: Bringing up loopback interface (lo)...");
-        match std::process::Command::new("ip")
+        match std::process::Command::new("/usr/bin/ip")
             .args(["link", "set", "lo", "up"])
             .output()
         {
@@ -139,7 +139,23 @@ pub fn entrypoint(
         std::env::set_var("USER", "root");
         std::env::set_var("LOGNAME", "root");
 
+        let reserved_keys = [
+            "PATH",
+            "XDG_RUNTIME_DIR",
+            "WAYLAND_SOCKET",
+            "WAYLAND_DISPLAY",
+            "HOME",
+            "USER",
+            "LOGNAME",
+        ];
+
         for (k, v) in &config.environment {
+            if reserved_keys.contains(&k.as_str()) {
+                eprintln!(
+                    "Child: WARNING: Profile is overriding reserved environment variable '{}'",
+                    k
+                );
+            }
             std::env::set_var(k, v);
         }
     }
