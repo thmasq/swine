@@ -30,10 +30,15 @@ pub fn lockdown(config: &crate::config::SandboxConfig) -> Result<()> {
     }
 
     if config.seccomp_strict {
+        unsafe {
+            nix::libc::prctl(nix::libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+        }
+
         let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
 
         ctx.add_arch(libseccomp::ScmpArch::X86)?;
         ctx.add_arch(libseccomp::ScmpArch::X32)?;
+        ctx.add_arch(libseccomp::ScmpArch::X8664)?;
 
         let blocked_syscalls = [
             "ptrace",
