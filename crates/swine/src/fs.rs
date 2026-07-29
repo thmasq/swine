@@ -21,6 +21,31 @@ pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Resu
     setup_staging_area(&staging)?;
     mount_host_system_dirs(&staging)?;
     mount_pseudo_filesystems(&staging)?;
+
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        let wayland_display =
+            std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+        let host_socket = std::path::Path::new(&runtime_dir).join(&wayland_display);
+
+        if host_socket.exists() {
+            let guest_socket = staging.join("tmp").join(&wayland_display);
+            std::fs::File::create(&guest_socket).ok();
+
+            nix::mount::mount(
+                Some(&host_socket),
+                &guest_socket,
+                Option::<&str>::None,
+                nix::mount::MsFlags::MS_BIND,
+                Option::<&str>::None,
+            )
+            .context("Failed to bind-mount Wayland socket")?;
+            println!(
+                "Child: Bind-mounted Wayland socket to /tmp/{}",
+                wayland_display
+            );
+        }
+    }
+
     mount_dev_nodes(&staging)?;
 
     mount_overlay_binds(profile_name, &staging)?;
@@ -148,34 +173,28 @@ fn mount_pseudo_filesystems(staging: &Path) -> Result<()> {
 
     let sys_target = staging.join("sys");
 
-    if mount(
-        Some("sysfs"),
+    mount(
+        Some("/sys"),
         &sys_target,
-        Some("sysfs"),
-        MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
+        none,
+        MsFlags::MS_BIND | MsFlags::MS_REC,
         none,
     )
-    .is_err()
-    {
-        println!("Child: WARNING: Using non-recursive fallback /sys bind mount.");
+    .context("Failed to bind-mount host /sys")?;
 
-        mount(Some("/sys"), &sys_target, none, MsFlags::MS_BIND, none)
-            .context("Failed to bind-mount host /sys as fallback")?;
-
-        mount(
-            none,
-            &sys_target,
-            none,
-            MsFlags::MS_REMOUNT
-                | MsFlags::MS_BIND
-                | MsFlags::MS_RDONLY
-                | MsFlags::MS_NOSUID
-                | MsFlags::MS_NODEV
-                | MsFlags::MS_NOEXEC,
-            none,
-        )
-        .context("Failed to remount host /sys read-only")?;
-    }
+    mount(
+        none,
+        &sys_target,
+        none,
+        MsFlags::MS_REMOUNT
+            | MsFlags::MS_BIND
+            | MsFlags::MS_RDONLY
+            | MsFlags::MS_NOSUID
+            | MsFlags::MS_NODEV
+            | MsFlags::MS_NOEXEC,
+        none,
+    )
+    .context("Failed to remount host /sys read-only")?;
 
     let shm_target = staging.join("dev/shm");
     fs::create_dir_all(&shm_target).ok();

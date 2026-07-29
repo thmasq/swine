@@ -7,6 +7,11 @@ use std::os::fd::{BorrowedFd, FromRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
+use krun_sys::{
+    VIRGLRENDERER_NO_VIRGL, VIRGLRENDERER_RENDER_SERVER, VIRGLRENDERER_THREAD_SYNC,
+    VIRGLRENDERER_USE_ASYNC_FENCE_CB, VIRGLRENDERER_USE_EGL, VIRGLRENDERER_VENUS,
+};
+
 #[derive(Serialize)]
 struct KrunConfig {
     #[serde(rename = "Cmd")]
@@ -57,7 +62,6 @@ pub fn entrypoint(
         return 1;
     }
 
-    let mut wayland_fd_env = None;
     if config.graphics.gamescope {
         if let Ok(xdg_runtime) = std::env::var("XDG_RUNTIME_DIR") {
             let host_socket =
@@ -74,7 +78,6 @@ pub fn entrypoint(
                         nix::libc::fcntl(fd, nix::libc::F_SETFD, flags & !nix::libc::FD_CLOEXEC);
                     }
                 }
-                wayland_fd_env = Some(fd.to_string());
                 println!("Child: Extracted host Wayland FD {} via UnixStream.", fd);
             } else {
                 eprintln!("Child: WARNING: Failed to connect to host Wayland socket.");
@@ -154,12 +157,6 @@ pub fn entrypoint(
     unsafe {
         std::env::set_var("PATH", "/usr/bin:/usr/local/bin:/bin:/sbin");
         std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
-
-        if let Some(fd_str) = wayland_fd_env {
-            std::env::set_var("WAYLAND_SOCKET", fd_str);
-        } else {
-            std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
-        }
 
         std::env::set_var("HOME", "/home/user");
         std::env::set_var("USER", "root");
@@ -261,7 +258,10 @@ pub fn entrypoint(
     let krun_config = KrunBaseConfig {
         config: KrunConfig {
             args: guest_args,
-            envs: vec!["PATH=/usr/bin:/bin".to_string()], // We can forward more envs later
+            envs: vec![
+                "PATH=/usr/bin:/bin".to_string(),
+                "MESA_LOADER_DRIVER_OVERRIDE=zink".to_string(),
+            ],
         },
     };
 
@@ -275,12 +275,33 @@ pub fn entrypoint(
         return 1;
     }
 
+    let wayland_display =
+        std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
+    let path = std::ffi::CString::new(format!("/tmp/{}", wayland_display)).unwrap();
+
+    unsafe { krun_sys::krun_add_vsock_port(ctx_id as u32, 50000, path.as_ptr()) };
+    unsafe { std::env::remove_var("WAYLAND_SOCKET") };
+
     let num_vcpus = config.resources.cpu_quota_percent.unwrap_or(100) / 100;
     let num_vcpus = if num_vcpus == 0 { 1 } else { num_vcpus as u8 };
     let ram_mib = config.resources.memory_limit_mb.unwrap_or(2048) as u32;
 
+    let virgl_flags = VIRGLRENDERER_USE_EGL
+        | VIRGLRENDERER_NO_VIRGL
+        | VIRGLRENDERER_VENUS
+        | VIRGLRENDERER_RENDER_SERVER
+        | VIRGLRENDERER_THREAD_SYNC
+        | VIRGLRENDERER_USE_ASYNC_FENCE_CB;
+
+    let vram_shm_mib = 2048;
+
     unsafe {
         krun_sys::krun_set_vm_config(ctx_id as u32, num_vcpus, ram_mib);
+        krun_sys::krun_set_gpu_options2(
+            ctx_id as u32,
+            virgl_flags,
+            (vram_shm_mib as u64) * 1024 * 1024,
+        );
         krun_sys::krun_set_root(ctx_id as u32, c"/".as_ptr());
 
         let env_str = std::ffi::CString::new(format!("KRUN_CONFIG={}", config_path)).unwrap();
