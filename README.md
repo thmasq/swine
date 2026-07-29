@@ -127,6 +127,9 @@ gamescope = true
 resolution = "1920x1080"
 framerate_limit = 60
 fsr_enabled = false
+scaler = "integer"
+filter = "nearest"
+gamescope_args = ["--rt", "--adaptive-sync", "--hide-cursor-delay", "3000"]
 
 [resources]
 memory_limit_mb = 8192      # Enforced via delegated Cgroups v2 memory.max
