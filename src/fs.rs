@@ -359,8 +359,7 @@ fn mount_dropzone(dz: &Path, staging: &Path) -> Result<()> {
             | MsFlags::MS_RDONLY
             | MsFlags::MS_REC
             | MsFlags::MS_NOSUID
-            | MsFlags::MS_NODEV
-            | MsFlags::MS_NOEXEC,
+            | MsFlags::MS_NODEV,
         none,
     )?;
 
