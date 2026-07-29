@@ -1,15 +1,36 @@
-[package]
-name = "swine"
-version = "1.0.0"
-edition = "2024"
+[workspace]
+members = [
+  "crates/krun-sys",
+  "crates/swine",
+  "crates/swine-guest",
+]
+resolver = "2"
 
-[dependencies]
+[workspace.metadata]
+project_name = "swine"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+repository = "https://github.com/thmasq/swine"
+description = "Execute untrusted Windows binaries through Wine in an isolated environment"
+
+[workspace.dependencies]
 anyhow = "1.0.104"
 caps = "0.5.6"
 clap = { version = "4.6.4", features = ["derive"] }
+krun-sys = { path = "crates/krun-sys" }
 libc = "0.2.189"
 libseccomp = "0.4.0"
 nix = { version = "0.31.3", features = ["fs", "sched", "process", "signal", "user", "mount", "term", "ptrace", "hostname"] }
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 thiserror = "2.0.19"
 toml = "1.1.3"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"

@@ -1,9 +1,25 @@
-use nix::unistd::{execvp, read};
+use nix::unistd::read;
+use serde::Serialize;
 use std::ffi::CString;
+use std::fs::File;
 use std::io::Write;
 use std::os::fd::{BorrowedFd, FromRawFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
+
+#[derive(Serialize)]
+struct KrunConfig {
+    #[serde(rename = "Cmd")]
+    args: Vec<String>,
+    #[serde(rename = "Env")]
+    envs: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct KrunBaseConfig {
+    #[serde(rename = "Config")]
+    config: KrunConfig,
+}
 
 pub fn entrypoint(
     setup_read_fd: RawFd,
@@ -117,7 +133,7 @@ pub fn entrypoint(
         }
     }
 
-    println!("Child: Preparing for execve...");
+    println!("Child: Preparing for execution...");
 
     if let Some(parent) = exe.parent() {
         if parent.as_os_str() != "" {
@@ -226,24 +242,60 @@ pub fn entrypoint(
         exec_args.push(CString::new(exe.as_os_str().as_bytes()).unwrap());
     }
 
-    for arg in args {
-        exec_args.push(CString::new(arg).unwrap());
+    for arg in &args {
+        exec_args.push(CString::new(arg.as_str()).unwrap());
     }
 
-    let exec_bin = CString::new(exec_bin_name).unwrap();
-
-    println!("Child: Handing off execution to {:?}", exec_args);
+    println!("Child: Prepared to execute {:?}", exec_args);
 
     let _ = nix::unistd::setsid();
 
-    let e = execvp(&exec_bin, &exec_args).unwrap_err();
-    eprintln!("Child: execvp failed: {:?}", e);
+    println!("Child: Initializing libkrun microVM...");
 
-    let mut err_pipe = unsafe { std::fs::File::from_raw_fd(error_write_fd) };
-    let err_code = e as i32;
-    let mut msg = vec![2u8];
-    msg.extend_from_slice(&err_code.to_le_bytes());
-    let _ = err_pipe.write_all(&msg);
+    let mut guest_args = vec!["/swine-guest".to_string()];
+    guest_args.push(exec_bin_name);
+    for arg in &args {
+        guest_args.push(arg.clone());
+    }
 
-    1
+    let krun_config = KrunBaseConfig {
+        config: KrunConfig {
+            args: guest_args,
+            envs: vec!["PATH=/usr/bin:/bin".to_string()], // We can forward more envs later
+        },
+    };
+
+    let config_path = "/krun-config.json";
+    let config_file = File::create(config_path).expect("Failed to create krun config file");
+    serde_json::to_writer(&config_file, &krun_config).expect("Failed to write krun config");
+
+    let ctx_id = unsafe { krun_sys::krun_create_ctx() };
+    if ctx_id < 0 {
+        eprintln!("Child: Failed to create krun context: {}", ctx_id);
+        return 1;
+    }
+
+    let num_vcpus = config.resources.cpu_quota_percent.unwrap_or(100) / 100;
+    let num_vcpus = if num_vcpus == 0 { 1 } else { num_vcpus as u8 };
+    let ram_mib = config.resources.memory_limit_mb.unwrap_or(2048) as u32;
+
+    unsafe {
+        krun_sys::krun_set_vm_config(ctx_id as u32, num_vcpus, ram_mib);
+        krun_sys::krun_set_root(ctx_id as u32, c"/".as_ptr());
+
+        let env_str = std::ffi::CString::new(format!("KRUN_CONFIG={}", config_path)).unwrap();
+        let env_ptrs: Vec<*const libc::c_char> = vec![env_str.as_ptr(), std::ptr::null()];
+        krun_sys::krun_set_env(ctx_id as u32, env_ptrs.as_ptr());
+    }
+
+    println!("Child: Launching KVM microVM...");
+
+    let err = unsafe { krun_sys::krun_start_enter(ctx_id as u32) };
+
+    if err < 0 {
+        eprintln!("Child: krun_start_enter failed: {}", err);
+        return 1;
+    }
+
+    0
 }

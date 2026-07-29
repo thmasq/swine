@@ -1,0 +1,17 @@
+[package]
+name = "swine"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+caps = { workspace = true }
+clap = { workspace = true }
+krun-sys = { workspace = true }
+libc = { workspace = true }
+libseccomp = { workspace = true }
+nix = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }

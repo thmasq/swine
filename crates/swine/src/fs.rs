@@ -33,6 +33,21 @@ pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Resu
 
     mount_network_and_fonts(&staging)?;
 
+    let host_exe = std::env::current_exe().context("Failed to get current executable path")?;
+    if let Some(parent) = host_exe.parent() {
+        let guest_exe_src = parent.join("swine-guest");
+        let guest_exe_dst = staging.join("swine-guest");
+
+        std::fs::copy(&guest_exe_src, &guest_exe_dst)
+            .context("Failed to copy swine-guest into sandbox staging directory")?;
+
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&guest_exe_dst, std::fs::Permissions::from_mode(0o755))
+            .context("Failed to make swine-guest executable")?;
+
+        println!("Child: Injected swine-guest into the sandbox at /swine-guest");
+    }
+
     finalize_pivot_root(&staging)?;
 
     let fuse_pid = mount_overlay_fs_post_pivot()?;
@@ -204,6 +219,8 @@ fn mount_dev_nodes(staging: &Path) -> Result<()> {
         "/dev/urandom",
         "/dev/random",
         "/dev/fuse",
+        "/dev/kvm",
+        "/dev/vhost-vsock",
     ];
 
     for node in &dev_nodes {
