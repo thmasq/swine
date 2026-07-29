@@ -53,6 +53,26 @@ impl Default for NetworkConfig {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Scaler {
+    Auto,
+    Integer,
+    Fit,
+    Fill,
+    Stretch,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Filter {
+    Linear,
+    Nearest,
+    Fsr,
+    Nis,
+    Pixel,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GraphicsConfig {
     #[serde(default = "default_true")]
@@ -61,6 +81,10 @@ pub struct GraphicsConfig {
     pub framerate_limit: Option<u32>,
     #[serde(default = "default_false")]
     pub fsr_enabled: bool,
+    pub scaler: Option<Scaler>,
+    pub filter: Option<Filter>,
+    #[serde(default)]
+    pub gamescope_args: Vec<String>,
 }
 
 impl Default for GraphicsConfig {
@@ -70,6 +94,9 @@ impl Default for GraphicsConfig {
             resolution: None,
             framerate_limit: None,
             fsr_enabled: false,
+            scaler: None,
+            filter: None,
+            gamescope_args: Vec::new(),
         }
     }
 }

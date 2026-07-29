@@ -189,6 +189,34 @@ pub fn entrypoint(
             }
         }
 
+        if let Some(scaler) = &config.graphics.scaler {
+            let scaler_str = match scaler {
+                crate::config::Scaler::Auto => "auto",
+                crate::config::Scaler::Integer => "integer",
+                crate::config::Scaler::Fit => "fit",
+                crate::config::Scaler::Fill => "fill",
+                crate::config::Scaler::Stretch => "stretch",
+            };
+            exec_args.push(CString::new("-S").unwrap());
+            exec_args.push(CString::new(scaler_str).unwrap());
+        }
+
+        if let Some(filter) = &config.graphics.filter {
+            let filter_str = match filter {
+                crate::config::Filter::Linear => "linear",
+                crate::config::Filter::Nearest => "nearest",
+                crate::config::Filter::Fsr => "fsr",
+                crate::config::Filter::Nis => "nis",
+                crate::config::Filter::Pixel => "pixel",
+            };
+            exec_args.push(CString::new("-F").unwrap());
+            exec_args.push(CString::new(filter_str).unwrap());
+        }
+
+        for arg in &config.graphics.gamescope_args {
+            exec_args.push(CString::new(arg.as_str()).unwrap());
+        }
+
         exec_args.push(CString::new("--").unwrap());
         exec_args.push(CString::new("wine").unwrap());
         exec_args.push(CString::new(exe.as_os_str().as_bytes()).unwrap());
