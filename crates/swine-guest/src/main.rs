@@ -1,4 +1,6 @@
 use anyhow::Result;
+use caps::CapSet;
+use libseccomp::{ScmpAction, ScmpArgCompare, ScmpCompareOp, ScmpFilterContext, ScmpSyscall};
 use nix::unistd::execvp;
 use std::ffi::CString;
 
@@ -130,7 +132,9 @@ fn main() -> Result<()> {
         );
     }
 
-    // TODO: Inner Sandbox Lockdown
+    if let Err(e) = inner_lockdown() {
+        eprintln!("swine-guest: Inner security lockdown failed: {:?}", e);
+    }
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -146,8 +150,6 @@ fn main() -> Result<()> {
         exec_args.push(CString::new(arg.as_str()).unwrap());
     }
 
-    // TODO?: (Future Work) Forwarding Sockets
-
     unsafe {
         std::env::set_var("XDG_RUNTIME_DIR", "/tmp");
     }
@@ -157,4 +159,151 @@ fn main() -> Result<()> {
 
     eprintln!("swine-guest: execvp failed: {:?}", err);
     std::process::exit(1);
+}
+
+fn inner_lockdown() -> Result<()> {
+    println!("swine-guest: Dropping capabilities inside the microVM...");
+    caps::clear(None, CapSet::Bounding)?;
+    caps::clear(None, CapSet::Effective)?;
+    caps::clear(None, CapSet::Inheritable)?;
+    caps::clear(None, CapSet::Permitted)?;
+
+    unsafe {
+        nix::libc::prctl(nix::libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+    }
+
+    println!("swine-guest: Applying inner Seccomp filter...");
+    let mut ctx = ScmpFilterContext::new(ScmpAction::Allow)?;
+
+    ctx.add_arch(libseccomp::ScmpArch::X86)?;
+    ctx.add_arch(libseccomp::ScmpArch::X8664)?;
+
+    let blocked_syscalls = [
+        "ptrace",
+        "process_vm_readv",
+        "process_vm_writev",
+        "vmsplice",
+        "userfaultfd",
+        "init_module",
+        "finit_module",
+        "delete_module",
+        "kexec_load",
+        "kexec_file_load",
+        "bpf",
+        "perf_event_open",
+        "unshare",
+        "setns",
+        "clone3",
+        "mount",
+        "umount2",
+        "pivot_root",
+        "keyctl",
+        "add_key",
+        "request_key",
+        "io_uring_setup",
+        "io_uring_enter",
+        "io_uring_register",
+        "kcmp",
+        "fsopen",
+        "fsconfig",
+        "fsmount",
+        "fspick",
+        "move_mount",
+        "open_tree",
+        "mount_setattr",
+        "statmount",
+        "listmount",
+        "open_by_handle_at",
+        "name_to_handle_at",
+        "pidfd_getfd",
+        "process_madvise",
+        "process_mrelease",
+        "ioperm",
+        "iopl",
+        "personality",
+        "syslog",
+        "chroot",
+        "create_module",
+        "query_module",
+        "get_kernel_syms",
+        "uselib",
+        "_sysctl",
+        "sysfs",
+        "ustat",
+        "nfsservctl",
+        "quotactl",
+        "reboot",
+        "clock_adjtime",
+        "clock_settime",
+        "settimeofday",
+        "stime",
+        "get_mempolicy",
+        "set_mempolicy",
+        "mbind",
+        "move_pages",
+        "vm86",
+        "vm86old",
+        "lookup_dcookie",
+        "acct",
+        "socketcall",
+        "swapon",
+        "swapoff",
+    ];
+
+    for syscall_name in &blocked_syscalls {
+        if let Ok(syscall) = ScmpSyscall::from_name(syscall_name) {
+            let errno: i32 = if *syscall_name == "clone3" {
+                nix::libc::ENOSYS
+            } else {
+                nix::libc::EPERM
+            };
+
+            let _ = ctx.add_rule(ScmpAction::Errno(errno), syscall);
+        }
+    }
+
+    // SOCKET: Block AF_ALG (38) and AF_VSOCK (40)
+    if let Ok(socket_syscall) = ScmpSyscall::from_name("socket") {
+        let _ = ctx.add_rule_conditional(
+            ScmpAction::Errno(nix::libc::EPERM),
+            socket_syscall,
+            &[ScmpArgCompare::new(0, ScmpCompareOp::Equal, 38)],
+        );
+        let _ = ctx.add_rule_conditional(
+            ScmpAction::Errno(nix::libc::EPERM),
+            socket_syscall,
+            &[ScmpArgCompare::new(0, ScmpCompareOp::Equal, 40)],
+        );
+    }
+
+    // CLONE: Block creation of namespaces, but allow normal multithreading
+    if let Ok(clone_syscall) = ScmpSyscall::from_name("clone") {
+        let forbidden_clone_flags: [u64; 8] = [
+            0x00000080, 0x02000000, 0x00020000, 0x04000000, 0x08000000, 0x10000000, 0x20000000,
+            0x40000000,
+        ];
+        for flag in forbidden_clone_flags.iter() {
+            let _ = ctx.add_rule_conditional(
+                ScmpAction::Errno(nix::libc::EPERM),
+                clone_syscall,
+                &[ScmpArgCompare::new(
+                    0,
+                    ScmpCompareOp::MaskedEqual(*flag),
+                    *flag,
+                )],
+            );
+        }
+    }
+
+    // IOCTL: Block TIOCSTI (Terminal Injection)
+    if let Ok(ioctl_syscall) = ScmpSyscall::from_name("ioctl") {
+        let _ = ctx.add_rule_conditional(
+            ScmpAction::Errno(nix::libc::EPERM),
+            ioctl_syscall,
+            &[ScmpArgCompare::new(1, ScmpCompareOp::Equal, 0x5412)],
+        );
+    }
+
+    ctx.load()?;
+    Ok(())
 }

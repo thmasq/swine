@@ -9,9 +9,36 @@ pub fn lockdown(config: &crate::config::SandboxConfig) -> Result<()> {
     fs::create_dir_all("/etc").context("Failed to create /etc")?;
     fs::write(
         "/etc/passwd",
-        "root:x:0:0:root:/home/user:/bin/sh\nplayer:x:1000:1000:player:/home/user:/bin/sh\n",
+        "root:x:0:0:root:/home/user:/bin/sh\n\
+             tss:x:324:324:tss user:/:/bin/nologin\n\
+             player:x:1000:1000:player:/home/user:/bin/sh\n",
     )
     .context("Failed to write /etc/passwd")?;
+
+    fs::write(
+        "/etc/group",
+        "root:x:0:\n\
+             tty:x:5:\n\
+             disk:x:6:\n\
+             lp:x:7:\n\
+             uucp:x:14:\n\
+             kmem:x:15:\n\
+             audio:x:29:\n\
+             video:x:44:\n\
+             storage:x:46:\n\
+             optical:x:93:\n\
+             input:x:97:\n\
+             kvm:x:98:\n\
+             render:x:320:\n\
+             sgx:x:321:\n\
+             i2c:x:322:\n\
+             clock:x:323:\n\
+             tss:x:324:\n\
+             rfkill:x:325:\n\
+             adbusers:x:326:\n\
+             player:x:1000:\n",
+    )
+    .context("Failed to write /etc/group")?;
 
     fs::write("/etc/hostname", "swine\n").ok();
     fs::write(

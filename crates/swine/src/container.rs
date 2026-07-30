@@ -193,12 +193,6 @@ pub fn entrypoint(
 
     let _ = nix::unistd::setsid();
 
-    println!("Child: Verifying socket exists in the sandbox:");
-    let _ = std::process::Command::new("/usr/bin/ls")
-        .arg("-la")
-        .arg("/run/wayland-sockets")
-        .status();
-
     println!("Child: Initializing libkrun microVM...");
 
     let mut guest_args = vec!["/swine-guest".to_string()];

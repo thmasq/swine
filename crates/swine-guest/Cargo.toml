@@ -9,3 +9,5 @@ description.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 nix = { workspace = true }
+caps = { workspace = true }
+libseccomp = { workspace = true }
