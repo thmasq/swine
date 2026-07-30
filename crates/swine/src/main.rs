@@ -135,6 +135,64 @@ fn main() -> Result<()> {
                 parsed_config.graphics.resolution = resolution;
             }
 
+            let is_inner = std::env::var("SWINE_GAMESCOPE_INNER").is_ok();
+            if parsed_config.graphics.gamescope && !is_inner {
+                println!("Spawning swine on a higher level via Gamescope...");
+                let mut wrap_cmd = std::process::Command::new("gamescope");
+
+                if let Some(res) = &parsed_config.graphics.resolution {
+                    let parts: Vec<&str> = res.split('x').collect();
+                    if parts.len() == 2 {
+                        wrap_cmd.arg("-W").arg(parts[0]).arg("-H").arg(parts[1]);
+                    }
+                }
+
+                if let Some(scaler) = &parsed_config.graphics.scaler {
+                    let scaler_str = match scaler {
+                        crate::config::Scaler::Auto => "auto",
+                        crate::config::Scaler::Integer => "integer",
+                        crate::config::Scaler::Fit => "fit",
+                        crate::config::Scaler::Fill => "fill",
+                        crate::config::Scaler::Stretch => "stretch",
+                    };
+                    wrap_cmd.arg("-S").arg(scaler_str);
+                }
+
+                if let Some(filter) = &parsed_config.graphics.filter {
+                    let filter_str = match filter {
+                        crate::config::Filter::Linear => "linear",
+                        crate::config::Filter::Nearest => "nearest",
+                        crate::config::Filter::Fsr => "fsr",
+                        crate::config::Filter::Nis => "nis",
+                        crate::config::Filter::Pixel => "pixel",
+                    };
+                    wrap_cmd.arg("-F").arg(filter_str);
+                }
+
+                for arg in &parsed_config.graphics.gamescope_args {
+                    if arg != "--xwayland-count" && arg != "0" {
+                        wrap_cmd.arg(arg);
+                    }
+                }
+
+                wrap_cmd.arg("--");
+                wrap_cmd
+                    .arg(std::env::current_exe().context("Failed to get current executable path")?);
+                for arg in std::env::args().skip(1) {
+                    wrap_cmd.arg(arg);
+                }
+
+                wrap_cmd.env("SWINE_GAMESCOPE_INNER", "1");
+
+                let mut child = wrap_cmd
+                    .spawn()
+                    .context("Failed to spawn Gamescope wrapper")?;
+                let status = child
+                    .wait()
+                    .context("Failed to wait on Gamescope wrapper")?;
+                std::process::exit(status.code().unwrap_or(1));
+            }
+
             let host_exe = std::fs::canonicalize(&exe)
                 .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(&exe));
 
@@ -199,59 +257,28 @@ fn main() -> Result<()> {
 
             let host_waypipe_log = std::fs::File::create("/tmp/swine-waypipe-host.log")?;
 
-            let mut host_cmd;
-
-            if parsed_config.graphics.gamescope {
-                println!("Starting Gamescope with nested Waypipe client on host...");
-                host_cmd = std::process::Command::new("gamescope");
-
-                if let Some(res) = &parsed_config.graphics.resolution {
-                    let parts: Vec<&str> = res.split('x').collect();
-                    if parts.len() == 2 {
-                        host_cmd.arg("-W").arg(parts[0]).arg("-H").arg(parts[1]);
-                    }
-                }
-                if let Some(scaler) = &parsed_config.graphics.scaler {
-                    let scaler_str = match scaler {
-                        crate::config::Scaler::Auto => "auto",
-                        crate::config::Scaler::Integer => "integer",
-                        crate::config::Scaler::Fit => "fit",
-                        crate::config::Scaler::Fill => "fill",
-                        crate::config::Scaler::Stretch => "stretch",
-                    };
-                    host_cmd.arg("-S").arg(scaler_str);
-                }
-                if let Some(filter) = &parsed_config.graphics.filter {
-                    let filter_str = match filter {
-                        crate::config::Filter::Linear => "linear",
-                        crate::config::Filter::Nearest => "nearest",
-                        crate::config::Filter::Fsr => "fsr",
-                        crate::config::Filter::Nis => "nis",
-                        crate::config::Filter::Pixel => "pixel",
-                    };
-                    host_cmd.arg("-F").arg(filter_str);
-                }
-                for arg in &parsed_config.graphics.gamescope_args {
-                    host_cmd.arg(arg);
-                }
-
-                host_cmd.arg("--");
-                host_cmd.arg("waypipe");
-            } else {
-                println!("Starting Waypipe client on host...");
-                host_cmd = std::process::Command::new("waypipe");
-            }
+            println!("Starting Waypipe client on host...");
+            let mut host_cmd = std::process::Command::new("waypipe");
 
             let mut waypipe_host = host_cmd
+                .arg("--debug")
                 .arg("--compress")
                 .arg("none")
                 .arg("-s")
                 .arg(&host_waypipe_sock)
                 .arg("client")
+                .env(
+                    "WAYLAND_DISPLAY",
+                    std::env::var("WAYLAND_DISPLAY").unwrap_or_default(),
+                )
+                .env(
+                    "XDG_RUNTIME_DIR",
+                    std::env::var("XDG_RUNTIME_DIR").unwrap_or_default(),
+                )
                 .stdout(std::process::Stdio::from(host_waypipe_log.try_clone()?))
                 .stderr(std::process::Stdio::from(host_waypipe_log))
                 .spawn()
-                .context("Failed to spawn waypipe/gamescope on host")?;
+                .context("Failed to spawn waypipe on host")?;
 
             let handle =
                 supervisor::start_sandbox(&parsed_config, container_exe, args, final_dropzone)?;

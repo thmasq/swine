@@ -176,6 +176,7 @@ pub fn entrypoint(
 
     exec_args.push(CString::new("waypipe").unwrap());
     exec_args.push(CString::new("--no-gpu").unwrap());
+    exec_args.push(CString::new("--debug").unwrap());
     exec_args.push(CString::new("--compress").unwrap());
     exec_args.push(CString::new("none").unwrap());
     exec_args.push(CString::new("-s").unwrap());
@@ -200,22 +201,29 @@ pub fn entrypoint(
         guest_args.push(arg.to_string_lossy().into_owned());
     }
 
+    let mut envs = vec![
+        "PATH=/usr/bin:/bin".to_string(),
+        "MESA_LOADER_DRIVER_OVERRIDE=zink".to_string(),
+        "GALLIUM_DRIVER=zink".to_string(),
+        "VK_DRIVER_FILES=/usr/share/vulkan/icd.d/virtio_icd.json".to_string(),
+        "WINEPREFIX=/home/user/.wine".to_string(),
+        "WINEDEBUG=-all".to_string(),
+        "XDG_RUNTIME_DIR=/tmp".to_string(),
+        "WLR_LIBINPUT_NO_DEVICES=1".to_string(),
+        "DISPLAY=".to_string(),
+        "HOME=/home/user".to_string(),
+        "USER=root".to_string(),
+        "LOGNAME=root".to_string(),
+    ];
+
+    for (k, v) in &config.environment {
+        envs.push(format!("{}={}", k, v));
+    }
+
     let krun_config = KrunBaseConfig {
         config: KrunConfig {
             args: guest_args,
-            envs: vec![
-                "PATH=/usr/bin:/bin".to_string(),
-                "MESA_LOADER_DRIVER_OVERRIDE=zink".to_string(),
-                "GALLIUM_DRIVER=zink".to_string(),
-                "WINEPREFIX=/home/user/.wine".to_string(),
-                "WINEDEBUG=-all".to_string(),
-                "XDG_RUNTIME_DIR=/tmp".to_string(),
-                "WLR_LIBINPUT_NO_DEVICES=1".to_string(),
-                "DISPLAY=".to_string(),
-                "HOME=/home/user".to_string(),
-                "USER=root".to_string(),
-                "LOGNAME=root".to_string(),
-            ],
+            envs,
         },
     };
 
