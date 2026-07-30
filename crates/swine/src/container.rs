@@ -34,6 +34,7 @@ pub fn entrypoint(
     args: Vec<String>,
     dropzone: Option<PathBuf>,
 ) -> isize {
+    let host_display = std::env::var("DISPLAY").ok();
     println!("Child: Starting namespace initialization...");
 
     unsafe {
@@ -176,7 +177,6 @@ pub fn entrypoint(
 
     exec_args.push(CString::new("waypipe").unwrap());
     exec_args.push(CString::new("--no-gpu").unwrap());
-    exec_args.push(CString::new("--debug").unwrap());
     exec_args.push(CString::new("--compress").unwrap());
     exec_args.push(CString::new("none").unwrap());
     exec_args.push(CString::new("-s").unwrap());
@@ -207,10 +207,10 @@ pub fn entrypoint(
         "GALLIUM_DRIVER=zink".to_string(),
         "VK_DRIVER_FILES=/usr/share/vulkan/icd.d/virtio_icd.json".to_string(),
         "WINEPREFIX=/home/user/.wine".to_string(),
-        "WINEDEBUG=-all".to_string(),
+        "WINEDEBUG=err+all,fixme+all".to_string(),
         "XDG_RUNTIME_DIR=/tmp".to_string(),
         "WLR_LIBINPUT_NO_DEVICES=1".to_string(),
-        "DISPLAY=".to_string(),
+        "DISPLAY=:0".to_string(),
         "HOME=/home/user".to_string(),
         "USER=root".to_string(),
         "LOGNAME=root".to_string(),
@@ -263,6 +263,14 @@ pub fn entrypoint(
 
         let host_waypipe_sock = std::ffi::CString::new("/run/wayland-sockets/wayland-0").unwrap();
         krun_sys::krun_add_vsock_port(ctx_id as u32, 10000, host_waypipe_sock.as_ptr());
+
+        if let Some(display) = host_display {
+            if let Some(x_num) = display.split('.').next().unwrap_or("").strip_prefix(':') {
+                let host_x11_sock =
+                    std::ffi::CString::new(format!("/tmp/.X11-unix/X{}", x_num)).unwrap();
+                krun_sys::krun_add_vsock_port(ctx_id as u32, 10001, host_x11_sock.as_ptr());
+            }
+        }
 
         let env_str = std::ffi::CString::new(format!("KRUN_CONFIG={}", config_path)).unwrap();
         let env_ptrs: Vec<*const libc::c_char> = vec![env_str.as_ptr(), std::ptr::null()];

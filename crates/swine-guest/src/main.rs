@@ -43,6 +43,62 @@ fn main() -> Result<()> {
 
     match unsafe { nix::unistd::fork() } {
         Ok(nix::unistd::ForkResult::Child) => {
+            std::thread::spawn(|| {
+                let _ = std::fs::create_dir_all("/tmp/.X11-unix");
+                let _ = std::fs::remove_file("/tmp/.X11-unix/X0");
+                if let Ok(listener) = std::os::unix::net::UnixListener::bind("/tmp/.X11-unix/X0") {
+                    for stream in listener.incoming() {
+                        if let Ok(mut client) = stream {
+                            let fd = unsafe {
+                                nix::libc::socket(nix::libc::AF_VSOCK, nix::libc::SOCK_STREAM, 0)
+                            };
+                            if fd < 0 {
+                                eprintln!(
+                                    "swine-guest proxy: Failed to create vsock socket for X11"
+                                );
+                                continue;
+                            }
+
+                            let mut addr: nix::libc::sockaddr_vm = unsafe { std::mem::zeroed() };
+                            addr.svm_family = nix::libc::AF_VSOCK as nix::libc::sa_family_t;
+                            addr.svm_cid = nix::libc::VMADDR_CID_HOST;
+                            addr.svm_port = 10001;
+
+                            let res = unsafe {
+                                nix::libc::connect(
+                                    fd,
+                                    &addr as *const _ as *const nix::libc::sockaddr,
+                                    std::mem::size_of_val(&addr) as u32,
+                                )
+                            };
+
+                            if res < 0 {
+                                eprintln!(
+                                    "swine-guest proxy: Failed to connect to host X11 via VSOCK"
+                                );
+                                unsafe { nix::libc::close(fd) };
+                                continue;
+                            }
+
+                            println!("swine-guest proxy: Successfully connected to X11 via VSOCK");
+
+                            use std::os::unix::io::FromRawFd;
+                            let mut server = unsafe { std::net::TcpStream::from_raw_fd(fd) };
+
+                            let mut client_clone = client.try_clone().unwrap();
+                            let mut server_clone = server.try_clone().unwrap();
+
+                            std::thread::spawn(move || {
+                                let _ = std::io::copy(&mut client, &mut server);
+                            });
+                            std::thread::spawn(move || {
+                                let _ = std::io::copy(&mut server_clone, &mut client_clone);
+                            });
+                        }
+                    }
+                }
+            });
+
             let _ = std::fs::remove_file("/tmp/waypipe-local.sock");
             if let Ok(listener) = std::os::unix::net::UnixListener::bind("/tmp/waypipe-local.sock")
             {
@@ -52,7 +108,9 @@ fn main() -> Result<()> {
                             nix::libc::socket(nix::libc::AF_VSOCK, nix::libc::SOCK_STREAM, 0)
                         };
                         if fd < 0 {
-                            eprintln!("swine-guest proxy: Failed to create vsock socket");
+                            eprintln!(
+                                "swine-guest proxy: Failed to create vsock socket for Wayland"
+                            );
                             continue;
                         }
 
@@ -71,7 +129,7 @@ fn main() -> Result<()> {
 
                         if res < 0 {
                             eprintln!(
-                                "swine-guest proxy: Failed to connect to host waypipe via VSOCK"
+                                "swine-guest proxy: Failed to connect to host Wayland via VSOCK"
                             );
                             unsafe { nix::libc::close(fd) };
                             continue;

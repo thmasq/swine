@@ -260,17 +260,17 @@ fn main() -> Result<()> {
             println!("Starting Waypipe client on host...");
             let mut host_cmd = std::process::Command::new("waypipe");
 
+            let wayland_display = std::env::var("GAMESCOPE_WAYLAND_DISPLAY")
+                .or_else(|_| std::env::var("WAYLAND_DISPLAY"))
+                .unwrap_or_else(|_| "wayland-0".to_string());
+
             let mut waypipe_host = host_cmd
-                .arg("--debug")
                 .arg("--compress")
                 .arg("none")
                 .arg("-s")
                 .arg(&host_waypipe_sock)
                 .arg("client")
-                .env(
-                    "WAYLAND_DISPLAY",
-                    std::env::var("WAYLAND_DISPLAY").unwrap_or_default(),
-                )
+                .env("WAYLAND_DISPLAY", wayland_display)
                 .env(
                     "XDG_RUNTIME_DIR",
                     std::env::var("XDG_RUNTIME_DIR").unwrap_or_default(),

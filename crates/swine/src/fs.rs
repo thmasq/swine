@@ -193,6 +193,19 @@ fn mount_pseudo_filesystems(staging: &Path) -> Result<()> {
     )
     .context("Failed to mount /tmp")?;
 
+    let host_x11 = std::path::Path::new("/tmp/.X11-unix");
+    if host_x11.exists() {
+        let x11_target = tmp_target.join(".X11-unix");
+        std::fs::create_dir_all(&x11_target).ok();
+        let _ = mount(
+            Some(host_x11),
+            &x11_target,
+            none,
+            MsFlags::MS_BIND | MsFlags::MS_REC,
+            none,
+        );
+    }
+
     let sockets_host = std::path::Path::new("/tmp/swine-sockets");
     if sockets_host.exists() {
         let sockets_target = staging.join("run/wayland-sockets");
