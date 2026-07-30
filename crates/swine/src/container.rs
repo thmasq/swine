@@ -255,7 +255,8 @@ pub fn entrypoint(
             virgl_flags,
             (vram_shm_mib as u64) * 1024 * 1024,
         );
-        krun_sys::krun_set_root(ctx_id as u32, c"/".as_ptr());
+        krun_sys::krun_add_virtiofs(ctx_id as u32, c"/dev/root".as_ptr(), c"/".as_ptr());
+
         krun_sys::krun_add_vsock(ctx_id as u32, 3); // 3 = INET | UNIX
 
         let host_waypipe_sock = std::ffi::CString::new("/run/wayland-sockets/wayland-0").unwrap();
