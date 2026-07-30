@@ -3,7 +3,7 @@ name: Build and Release Swine
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - "v*.*.*"
   workflow_dispatch:
 
 jobs:
@@ -14,7 +14,7 @@ jobs:
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel rust cargo git python python-pyelftools bc cpio elfutils clang libseccomp virglrenderer pipewire wayland
+          pacman -S --noconfirm base-devel rust rust-musl cargo git python python-pyelftools bc cpio elfutils clang libseccomp virglrenderer pipewire wayland
 
       - name: Checkout Swine
         uses: actions/checkout@v4
@@ -40,12 +40,18 @@ jobs:
           sed -i 's/# CONFIG_COMPAT_32BIT_TIME is not set/CONFIG_COMPAT_32BIT_TIME=y/' config-libkrunfw_x86_64
           make -j$(nproc)
           make PREFIX=/usr install
+          cp libkrunfw.a /usr/lib/ || true
 
       - name: Build libkrun
         run: |
           cd libkrun
+          sed -i 's/"cdylib", "lib"/"cdylib", "staticlib"/g' src/libkrun/Cargo.toml
+
           make -j$(nproc)
+          cargo build --release
           make PREFIX=/usr install
+
+          cp target/release/libkrun.a /usr/lib/
 
       - name: Build Swine (Statically Linked to Krun)
         run: |

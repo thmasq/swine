@@ -9,11 +9,15 @@ fn main() -> Result<(), pkg_config::Error> {
 
     let library = if is_static {
         let output = std::process::Command::new("pkg-config")
+            .env("PKG_CONFIG_ALLOW_SYSTEM_LIBS", "1")
             .args(&["--libs", "--static", "libkrun"])
             .output()
             .expect("Failed to run pkg-config");
 
         let libs_str = String::from_utf8_lossy(&output.stdout);
+
+        println!("cargo:rustc-link-search=native=/usr/lib");
+        println!("cargo:rustc-link-search=native=/usr/lib64");
 
         for token in libs_str.split_whitespace() {
             if let Some(path) = token.strip_prefix("-L") {
