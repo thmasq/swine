@@ -163,7 +163,6 @@ fn main() -> Result<()> {
             } else {
                 container_exe = host_exe;
             }
-            // ----------------------------------------
 
             if dry_run {
                 println!("--- DRY RUN ---");
@@ -190,7 +189,76 @@ fn main() -> Result<()> {
             }
 
             println!("Running executable: {:?}", container_exe);
-            supervisor::start_sandbox(&parsed_config, container_exe, args, final_dropzone)?;
+
+            let sockets_dir = "/tmp/swine-sockets";
+            std::fs::create_dir_all(sockets_dir).ok();
+            let host_waypipe_sock = format!("{}/wayland-0", sockets_dir);
+
+            let _ = std::fs::remove_file(&host_waypipe_sock);
+            let _ = std::fs::remove_file(format!("{}.lock", host_waypipe_sock));
+
+            let host_waypipe_log = std::fs::File::create("/tmp/swine-waypipe-host.log")?;
+
+            let mut host_cmd;
+
+            if parsed_config.graphics.gamescope {
+                println!("Starting Gamescope with nested Waypipe client on host...");
+                host_cmd = std::process::Command::new("gamescope");
+
+                if let Some(res) = &parsed_config.graphics.resolution {
+                    let parts: Vec<&str> = res.split('x').collect();
+                    if parts.len() == 2 {
+                        host_cmd.arg("-W").arg(parts[0]).arg("-H").arg(parts[1]);
+                    }
+                }
+                if let Some(scaler) = &parsed_config.graphics.scaler {
+                    let scaler_str = match scaler {
+                        crate::config::Scaler::Auto => "auto",
+                        crate::config::Scaler::Integer => "integer",
+                        crate::config::Scaler::Fit => "fit",
+                        crate::config::Scaler::Fill => "fill",
+                        crate::config::Scaler::Stretch => "stretch",
+                    };
+                    host_cmd.arg("-S").arg(scaler_str);
+                }
+                if let Some(filter) = &parsed_config.graphics.filter {
+                    let filter_str = match filter {
+                        crate::config::Filter::Linear => "linear",
+                        crate::config::Filter::Nearest => "nearest",
+                        crate::config::Filter::Fsr => "fsr",
+                        crate::config::Filter::Nis => "nis",
+                        crate::config::Filter::Pixel => "pixel",
+                    };
+                    host_cmd.arg("-F").arg(filter_str);
+                }
+                for arg in &parsed_config.graphics.gamescope_args {
+                    host_cmd.arg(arg);
+                }
+
+                host_cmd.arg("--");
+                host_cmd.arg("waypipe");
+            } else {
+                println!("Starting Waypipe client on host...");
+                host_cmd = std::process::Command::new("waypipe");
+            }
+
+            let mut waypipe_host = host_cmd
+                .arg("--compress")
+                .arg("none")
+                .arg("-s")
+                .arg(&host_waypipe_sock)
+                .arg("client")
+                .stdout(std::process::Stdio::from(host_waypipe_log.try_clone()?))
+                .stderr(std::process::Stdio::from(host_waypipe_log))
+                .spawn()
+                .context("Failed to spawn waypipe/gamescope on host")?;
+
+            let handle =
+                supervisor::start_sandbox(&parsed_config, container_exe, args, final_dropzone)?;
+
+            let _ = handle.join();
+            let _ = waypipe_host.kill();
+            let _ = std::fs::remove_file(&host_waypipe_sock);
         }
 
         Commands::Profile { command } => match command {

@@ -37,6 +37,18 @@ pub fn entrypoint(
     println!("Child: Starting namespace initialization...");
 
     unsafe {
+        let mut rlim: nix::libc::rlimit = std::mem::zeroed();
+        if nix::libc::getrlimit(nix::libc::RLIMIT_NOFILE, &mut rlim) == 0 {
+            rlim.rlim_cur = rlim.rlim_max;
+            if nix::libc::setrlimit(nix::libc::RLIMIT_NOFILE, &rlim) != 0 {
+                eprintln!("Child: WARNING: Failed to maximize RLIMIT_NOFILE!");
+            } else {
+                println!("Child: Maximized RLIMIT_NOFILE to {}", rlim.rlim_max);
+            }
+        }
+    }
+
+    unsafe {
         nix::libc::prctl(
             nix::libc::PR_SET_PDEATHSIG,
             nix::libc::SIGKILL as libc::c_ulong,
@@ -62,30 +74,7 @@ pub fn entrypoint(
         return 1;
     }
 
-    if config.graphics.gamescope {
-        if let Ok(xdg_runtime) = std::env::var("XDG_RUNTIME_DIR") {
-            let host_socket =
-                std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
-            let socket_path = std::path::Path::new(&xdg_runtime).join(host_socket);
-
-            if let Ok(stream) = std::os::unix::net::UnixStream::connect(&socket_path) {
-                use std::os::unix::io::IntoRawFd;
-                let fd = stream.into_raw_fd();
-
-                unsafe {
-                    let flags = nix::libc::fcntl(fd, nix::libc::F_GETFD);
-                    if flags >= 0 {
-                        nix::libc::fcntl(fd, nix::libc::F_SETFD, flags & !nix::libc::FD_CLOEXEC);
-                    }
-                }
-                println!("Child: Extracted host Wayland FD {} via UnixStream.", fd);
-            } else {
-                eprintln!("Child: WARNING: Failed to connect to host Wayland socket.");
-            }
-        }
-    }
-
-    let fs_result = match crate::fs::isolate_filesystem(&config.profile.name, dropzone) {
+    let fs_result = match crate::fs::isolate_filesystem(&config.profile.name, dropzone.clone()) {
         Ok(res) => res,
         Err(e) => {
             eprintln!("Child: Filesystem setup failed: {:?}", e);
@@ -184,61 +173,18 @@ pub fn entrypoint(
     }
 
     let mut exec_args = Vec::new();
-    let exec_bin_name: String;
 
-    if config.graphics.gamescope {
-        exec_bin_name = "gamescope".to_string();
-        exec_args.push(CString::new("gamescope").unwrap());
-        exec_args.push(CString::new("--backend").unwrap());
-        exec_args.push(CString::new("wayland").unwrap());
+    exec_args.push(CString::new("waypipe").unwrap());
+    exec_args.push(CString::new("--no-gpu").unwrap());
+    exec_args.push(CString::new("--compress").unwrap());
+    exec_args.push(CString::new("none").unwrap());
+    exec_args.push(CString::new("-s").unwrap());
+    exec_args.push(CString::new("/tmp/waypipe-local.sock").unwrap());
+    exec_args.push(CString::new("server").unwrap());
+    exec_args.push(CString::new("--").unwrap());
 
-        if let Some(res) = &config.graphics.resolution {
-            let parts: Vec<&str> = res.split('x').collect();
-            if parts.len() == 2 {
-                exec_args.push(CString::new("-W").unwrap());
-                exec_args.push(CString::new(parts[0]).unwrap());
-                exec_args.push(CString::new("-H").unwrap());
-                exec_args.push(CString::new(parts[1]).unwrap());
-            }
-        }
-
-        if let Some(scaler) = &config.graphics.scaler {
-            let scaler_str = match scaler {
-                crate::config::Scaler::Auto => "auto",
-                crate::config::Scaler::Integer => "integer",
-                crate::config::Scaler::Fit => "fit",
-                crate::config::Scaler::Fill => "fill",
-                crate::config::Scaler::Stretch => "stretch",
-            };
-            exec_args.push(CString::new("-S").unwrap());
-            exec_args.push(CString::new(scaler_str).unwrap());
-        }
-
-        if let Some(filter) = &config.graphics.filter {
-            let filter_str = match filter {
-                crate::config::Filter::Linear => "linear",
-                crate::config::Filter::Nearest => "nearest",
-                crate::config::Filter::Fsr => "fsr",
-                crate::config::Filter::Nis => "nis",
-                crate::config::Filter::Pixel => "pixel",
-            };
-            exec_args.push(CString::new("-F").unwrap());
-            exec_args.push(CString::new(filter_str).unwrap());
-        }
-
-        for arg in &config.graphics.gamescope_args {
-            exec_args.push(CString::new(arg.as_str()).unwrap());
-        }
-
-        exec_args.push(CString::new("--").unwrap());
-        exec_args.push(CString::new("wine").unwrap());
-        exec_args.push(CString::new(exe.as_os_str().as_bytes()).unwrap());
-    } else {
-        exec_bin_name = "wine".to_string();
-        exec_args.push(CString::new("wine").unwrap());
-        exec_args.push(CString::new(exe.as_os_str().as_bytes()).unwrap());
-    }
-
+    exec_args.push(CString::new("wine").unwrap());
+    exec_args.push(CString::new(exe.as_os_str().as_bytes()).unwrap());
     for arg in &args {
         exec_args.push(CString::new(arg.as_str()).unwrap());
     }
@@ -247,12 +193,17 @@ pub fn entrypoint(
 
     let _ = nix::unistd::setsid();
 
+    println!("Child: Verifying socket exists in the sandbox:");
+    let _ = std::process::Command::new("/usr/bin/ls")
+        .arg("-la")
+        .arg("/run/wayland-sockets")
+        .status();
+
     println!("Child: Initializing libkrun microVM...");
 
     let mut guest_args = vec!["/swine-guest".to_string()];
-    guest_args.push(exec_bin_name);
-    for arg in &args {
-        guest_args.push(arg.clone());
+    for arg in &exec_args {
+        guest_args.push(arg.to_string_lossy().into_owned());
     }
 
     let krun_config = KrunBaseConfig {
@@ -261,6 +212,15 @@ pub fn entrypoint(
             envs: vec![
                 "PATH=/usr/bin:/bin".to_string(),
                 "MESA_LOADER_DRIVER_OVERRIDE=zink".to_string(),
+                "GALLIUM_DRIVER=zink".to_string(),
+                "WINEPREFIX=/home/user/.wine".to_string(),
+                "WINEDEBUG=-all".to_string(),
+                "XDG_RUNTIME_DIR=/tmp".to_string(),
+                "WLR_LIBINPUT_NO_DEVICES=1".to_string(),
+                "DISPLAY=".to_string(),
+                "HOME=/home/user".to_string(),
+                "USER=root".to_string(),
+                "LOGNAME=root".to_string(),
             ],
         },
     };
@@ -274,13 +234,6 @@ pub fn entrypoint(
         eprintln!("Child: Failed to create krun context: {}", ctx_id);
         return 1;
     }
-
-    let wayland_display =
-        std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
-    let path = std::ffi::CString::new(format!("/tmp/{}", wayland_display)).unwrap();
-
-    unsafe { krun_sys::krun_add_vsock_port(ctx_id as u32, 50000, path.as_ptr()) };
-    unsafe { std::env::remove_var("WAYLAND_SOCKET") };
 
     let num_vcpus = config.resources.cpu_quota_percent.unwrap_or(100) / 100;
     let num_vcpus = if num_vcpus == 0 { 1 } else { num_vcpus as u8 };
@@ -303,6 +256,10 @@ pub fn entrypoint(
             (vram_shm_mib as u64) * 1024 * 1024,
         );
         krun_sys::krun_set_root(ctx_id as u32, c"/".as_ptr());
+        krun_sys::krun_add_vsock(ctx_id as u32, 3); // 3 = INET | UNIX
+
+        let host_waypipe_sock = std::ffi::CString::new("/run/wayland-sockets/wayland-0").unwrap();
+        krun_sys::krun_add_vsock_port(ctx_id as u32, 10000, host_waypipe_sock.as_ptr());
 
         let env_str = std::ffi::CString::new(format!("KRUN_CONFIG={}", config_path)).unwrap();
         let env_ptrs: Vec<*const libc::c_char> = vec![env_str.as_ptr(), std::ptr::null()];

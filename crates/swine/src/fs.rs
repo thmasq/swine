@@ -22,30 +22,6 @@ pub fn isolate_filesystem(profile_name: &str, dropzone: Option<PathBuf>) -> Resu
     mount_host_system_dirs(&staging)?;
     mount_pseudo_filesystems(&staging)?;
 
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        let wayland_display =
-            std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
-        let host_socket = std::path::Path::new(&runtime_dir).join(&wayland_display);
-
-        if host_socket.exists() {
-            let guest_socket = staging.join("tmp").join(&wayland_display);
-            std::fs::File::create(&guest_socket).ok();
-
-            nix::mount::mount(
-                Some(&host_socket),
-                &guest_socket,
-                Option::<&str>::None,
-                nix::mount::MsFlags::MS_BIND,
-                Option::<&str>::None,
-            )
-            .context("Failed to bind-mount Wayland socket")?;
-            println!(
-                "Child: Bind-mounted Wayland socket to /tmp/{}",
-                wayland_display
-            );
-        }
-    }
-
     mount_dev_nodes(&staging)?;
 
     mount_overlay_binds(profile_name, &staging)?;
@@ -216,6 +192,20 @@ fn mount_pseudo_filesystems(staging: &Path) -> Result<()> {
         Some("mode=1777"),
     )
     .context("Failed to mount /tmp")?;
+
+    let sockets_host = std::path::Path::new("/tmp/swine-sockets");
+    if sockets_host.exists() {
+        let sockets_target = staging.join("run/wayland-sockets");
+        std::fs::create_dir_all(&sockets_target).ok();
+        mount(
+            Some(sockets_host),
+            &sockets_target,
+            none,
+            MsFlags::MS_BIND | MsFlags::MS_REC,
+            none,
+        )
+        .context("Failed to bind-mount /run/wayland-sockets")?;
+    }
 
     let proc_target = staging.join("proc");
     mount(

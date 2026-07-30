@@ -59,7 +59,7 @@ pub fn start_sandbox(
     exe: PathBuf,
     args: Vec<String>,
     dropzone: Option<PathBuf>,
-) -> Result<()> {
+) -> Result<std::thread::JoinHandle<()>> {
     let (setup_read, setup_write) = pipe2(OFlag::O_CLOEXEC)?;
     let (error_read, error_write) = pipe2(OFlag::O_CLOEXEC)?;
 
@@ -150,83 +150,88 @@ pub fn start_sandbox(
         .context("Failed to signal child")?;
     drop(setup_write_file);
 
-    let mut fuse_pid_tracked = None;
-    let mut child_exec_failed = false;
+    let handle = std::thread::spawn(move || {
+        let mut fuse_pid_tracked = None;
+        let mut child_exec_failed = false;
 
-    loop {
-        let mut type_buf = [0u8; 1];
-        match error_read_file.read_exact(&mut type_buf) {
-            Ok(_) => {
-                let mut data_buf = [0u8; 4];
-                if let Ok(_) = error_read_file.read_exact(&mut data_buf) {
-                    if type_buf[0] == 1 {
-                        let f_pid = u32::from_le_bytes(data_buf);
-                        println!(
-                            "Supervisor: Tracking fuse-overlayfs daemon (Namespace PID: {})",
-                            f_pid
-                        );
-                        fuse_pid_tracked = Some(f_pid);
-                    } else if type_buf[0] == 2 {
-                        let exit_code = i32::from_le_bytes(data_buf);
-                        eprintln!("Supervisor: Child handoff failed with errno: {}", exit_code);
-                        child_exec_failed = true;
+        loop {
+            let mut type_buf = [0u8; 1];
+            match error_read_file.read_exact(&mut type_buf) {
+                Ok(_) => {
+                    let mut data_buf = [0u8; 4];
+                    if let Ok(_) = error_read_file.read_exact(&mut data_buf) {
+                        if type_buf[0] == 1 {
+                            let f_pid = u32::from_le_bytes(data_buf);
+                            println!(
+                                "Supervisor: Tracking fuse-overlayfs daemon (Namespace PID: {})",
+                                f_pid
+                            );
+                            fuse_pid_tracked = Some(f_pid);
+                        } else if type_buf[0] == 2 {
+                            let exit_code = i32::from_le_bytes(data_buf);
+                            eprintln!("Supervisor: Child handoff failed with errno: {}", exit_code);
+                            child_exec_failed = true;
+                        }
                     }
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    break;
+                }
+                Err(_) => break,
             }
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                break;
+        }
+
+        let status = match waitpid(child_pid, None) {
+            Ok(s) => s,
+            Err(e) if e == nix::errno::Errno::EINTR => {
+                waitpid(child_pid, None).expect("Failed to wait for child after EINTR")
             }
-            Err(_) => break,
+            Err(e) => {
+                eprintln!("Failed to wait for child: {}", e);
+                return;
+            }
+        };
+
+        if let Some(pid) = fuse_pid_tracked {
+            println!(
+                "Supervisor: FUSE daemon {} safely reaped by namespace destruction.",
+                pid
+            );
         }
-    }
 
-    let status = match waitpid(child_pid, None) {
-        Ok(s) => s,
-        Err(e) if e == nix::errno::Errno::EINTR => {
-            waitpid(child_pid, None).context("Failed to wait for child after EINTR")?
-        }
-        Err(e) => return Err(e).context("Failed to wait for child"),
-    };
+        CHILD_PID.store(0, Ordering::SeqCst);
+        cleanup.reaped = true;
 
-    if let Some(pid) = fuse_pid_tracked {
-        println!(
-            "Supervisor: FUSE daemon {} safely reaped by namespace destruction.",
-            pid
-        );
-    }
-
-    CHILD_PID.store(0, Ordering::SeqCst);
-    cleanup.reaped = true;
-
-    if !child_exec_failed {
-        match status {
-            nix::sys::wait::WaitStatus::Exited(_, code) => {
-                if code == 0 {
-                    println!("Supervisor: Child process exited cleanly.");
-                } else {
-                    eprintln!("Supervisor: Child process exited with code {}", code);
+        if !child_exec_failed {
+            match status {
+                nix::sys::wait::WaitStatus::Exited(_, code) => {
+                    if code == 0 {
+                        println!("Supervisor: Child process exited cleanly.");
+                    } else {
+                        eprintln!("Supervisor: Child process exited with code {}", code);
+                    }
+                }
+                nix::sys::wait::WaitStatus::Signaled(_, signal, core_dumped) => {
+                    eprintln!(
+                        "Supervisor: Child process was killed by signal {} (core dumped: {})",
+                        signal, core_dumped
+                    );
+                }
+                _ => {
+                    eprintln!(
+                        "Supervisor: Child process terminated with unknown status: {:?}",
+                        status
+                    );
                 }
             }
-            nix::sys::wait::WaitStatus::Signaled(_, signal, core_dumped) => {
-                eprintln!(
-                    "Supervisor: Child process was killed by signal {} (core dumped: {})",
-                    signal, core_dumped
-                );
-            }
-            _ => {
-                eprintln!(
-                    "Supervisor: Child process terminated with unknown status: {:?}",
-                    status
-                );
-            }
         }
-    }
 
-    let sig = SIGNAL_RECEIVED.load(Ordering::SeqCst);
-    if sig != 0 {
-        drop(cleanup);
-        std::process::exit(128 + sig);
-    }
+        let sig = SIGNAL_RECEIVED.load(Ordering::SeqCst);
+        if sig != 0 {
+            drop(cleanup);
+            std::process::exit(128 + sig);
+        }
+    });
 
-    Ok(())
+    Ok(handle)
 }
